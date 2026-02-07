@@ -30,13 +30,12 @@ environment:
 dependencies:
   flutter:
     sdk: flutter
-  camera: ^0.11.0
-  google_mlkit_face_detection: ^0.11.0
+  camera: ^0.10.5+5
+  google_mlkit_face_detection: ^0.10.0
+  path_provider: ^2.1.1
   sqflite: ^2.3.0
-  path_provider: ^2.1.0
-  path: ^1.9.0
-  permission_handler: ^11.0.0
-  image: ^4.0.0
+  intl: ^0.18.1
+  permission_handler: ^11.0.1
   # The following adds the Cupertino Icons font to your application.
   # Use with the CupertinoIcons class for iOS style icons.
   cupertino_icons: ^1.0.8
@@ -62,6 +61,10 @@ flutter:
   # included with your application, so that you can use the icons in
   # the material Icons class.
   uses-material-design: true
+
+
+  assets:
+    - assets/images/
 
   # To add assets to your application, add an assets section, like this:
   # assets:
