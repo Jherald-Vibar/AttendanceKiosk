@@ -1,4 +1,4 @@
-import 'package:Sentry/subject_section.dart';
+import 'package:Sentry/screens/kiosk/subject_section.dart';
 import 'package:flutter/material.dart';
 
 class Welcome extends StatelessWidget {

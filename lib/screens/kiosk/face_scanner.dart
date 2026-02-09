@@ -1,7 +1,9 @@
-import 'package:Sentry/welcome.dart';
+import 'package:Sentry/screens/kiosk/welcome.dart';
 import 'package:flutter/material.dart';
 import 'package:camera/camera.dart';
 import 'package:google_mlkit_face_detection/google_mlkit_face_detection.dart';
+import 'dart:io';
+import 'dart:typed_data';
 
 class FaceScanner extends StatefulWidget {
   const FaceScanner({super.key});
@@ -13,11 +15,13 @@ class FaceScanner extends StatefulWidget {
 class _FaceScannerState extends State<FaceScanner> {
   CameraController? _cameraController;
   bool _isDetecting = false;
-  List<Face> _faces = [];
+  bool _faceDetected = false;
   final FaceDetector _faceDetector = FaceDetector(
     options: FaceDetectorOptions(
-      enableContours: true,
-      enableClassification: true,
+      enableContours: false,
+      enableClassification: false,
+      enableTracking: false,
+      performanceMode: FaceDetectorMode.fast,
     ),
   );
 
@@ -36,8 +40,9 @@ class _FaceScannerState extends State<FaceScanner> {
 
     _cameraController = CameraController(
       frontCamera,
-      ResolutionPreset.high,
+      ResolutionPreset.low,
       enableAudio: false,
+      imageFormatGroup: ImageFormatGroup.nv21,
     );
 
     await _cameraController!.initialize();
@@ -60,7 +65,7 @@ class _FaceScannerState extends State<FaceScanner> {
           
           if (mounted) {
             setState(() {
-              _faces = faces;
+              _faceDetected = faces.isNotEmpty;
             });
           }
         }
@@ -73,35 +78,99 @@ class _FaceScannerState extends State<FaceScanner> {
   }
 
   InputImage? _inputImageFromCameraImage(CameraImage image) {
-    final camera = _cameraController!.description;
-    
-    InputImageRotation? rotation;
-    if (camera.lensDirection == CameraLensDirection.front) {
-      rotation = InputImageRotation.rotation270deg;
-    } else {
-      rotation = InputImageRotation.rotation90deg;
+    try {
+      final camera = _cameraController!.description;
+      
+      InputImageRotation rotation;
+      
+      if (Platform.isIOS) {
+        rotation = InputImageRotation.rotation0deg;
+      } else {
+        if (camera.lensDirection == CameraLensDirection.front) {
+          rotation = InputImageRotation.rotation270deg;
+        } else {
+          rotation = InputImageRotation.rotation90deg;
+        }
+      }
+
+      final format = InputImageFormatValue.fromRawValue(image.format.raw);
+      if (format == null) return null;
+
+      if (image.planes.isEmpty) return null;
+
+      // Concatenate all plane bytes for NV21 format
+      final allBytes = <int>[];
+      for (final plane in image.planes) {
+        allBytes.addAll(plane.bytes);
+      }
+
+      return InputImage.fromBytes(
+        bytes: Uint8List.fromList(allBytes),
+        metadata: InputImageMetadata(
+          size: Size(image.width.toDouble(), image.height.toDouble()),
+          rotation: rotation,
+          format: format,
+          bytesPerRow: image.planes[0].bytesPerRow,
+        ),
+      );
+    } catch (e) {
+      print('Error converting image: $e');
+      return null;
+    }
+  }
+
+  void _handleScan() async {
+    if (!_faceDetected) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('No face detected. Please position your face in the frame.'),
+          backgroundColor: Colors.red,
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
+      return;
     }
 
-    final format = InputImageFormatValue.fromRawValue(image.format.raw);
-    if (format == null) return null;
-
-    if (image.planes.isEmpty) return null;
-
-    final plane = image.planes.first;
-
-    return InputImage.fromBytes(
-      bytes: plane.bytes,
-      metadata: InputImageMetadata(
-        size: Size(image.width.toDouble(), image.height.toDouble()),
-        rotation: rotation,
-        format: format,
-        bytesPerRow: plane.bytesPerRow,
-      ),
-    );
+    try {
+      await _cameraController?.stopImageStream();
+      
+      // Show success message
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Face scanned successfully!'),
+            backgroundColor: Colors.green,
+            behavior: SnackBarBehavior.floating,
+            duration: Duration(seconds: 1),
+          ),
+        );
+      }
+      
+      // Wait a moment before navigating
+      await Future.delayed(Duration(milliseconds: 500));
+      
+      if (mounted) {
+        Navigator.push(
+          context,
+          MaterialPageRoute(builder: (context) => Welcome())
+        );
+      }
+    } catch (e) {
+      print('Error during scan: $e');
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Error scanning face. Please try again.'),
+            backgroundColor: Colors.red,
+          ),
+        );
+      }
+    }
   }
 
   @override
   void dispose() {
+    _cameraController?.stopImageStream();
     _cameraController?.dispose();
     _faceDetector.close();
     super.dispose();
@@ -136,7 +205,7 @@ class _FaceScannerState extends State<FaceScanner> {
           SafeArea(
             child: Column(
               children: [
-                // Header - SENTRY (transparent background)
+                // Header - SENTRY
                 Padding(
                   padding: EdgeInsets.only(top: 20, bottom: 10),
                   child: Text(
@@ -166,43 +235,58 @@ class _FaceScannerState extends State<FaceScanner> {
                       ),
                       SizedBox(height: 50),
                       
-                      // Face frame with rounded corners
+                      // Face frame with rounded corners - changes color based on detection
                       Container(
                         width: 300,
                         height: 380,
                         child: Stack(
                           children: [
-                            // Corner brackets
+                            // Corner brackets - color changes when face detected
                             Positioned(
                               top: 0,
                               left: 0,
-                              child: _buildCorner(true, true),
+                              child: _buildCorner(true, true, _faceDetected),
                             ),
                             Positioned(
                               top: 0,
                               right: 0,
-                              child: _buildCorner(true, false),
+                              child: _buildCorner(true, false, _faceDetected),
                             ),
                             Positioned(
                               bottom: 0,
                               left: 0,
-                              child: _buildCorner(false, true),
+                              child: _buildCorner(false, true, _faceDetected),
                             ),
                             Positioned(
                               bottom: 0,
                               right: 0,
-                              child: _buildCorner(false, false),
+                              child: _buildCorner(false, false, _faceDetected),
                             ),
+                            
+                            // Center checkmark when face is detected
+                            if (_faceDetected)
+                              Center(
+                                child: Icon(
+                                  Icons.check_circle,
+                                  color: Colors.green,
+                                  size: 64,
+                                ),
+                              ),
                           ],
                         ),
                       ),
                       
                       SizedBox(height: 50),
                       Text(
-                        'Find a good lighting spot',
+                        _faceDetected 
+                          ? 'Face detected! Ready to scan.'
+                          : 'Find a good lighting spot',
                         style: TextStyle(
-                          color: Colors.white.withOpacity(0.8),
+                          color: _faceDetected 
+                            ? Colors.green
+                            : Colors.white.withOpacity(0.8),
                           fontSize: 16,
+                          fontWeight: _faceDetected ? FontWeight.bold : FontWeight.normal,
                         ),
                       ),
                     ],
@@ -214,29 +298,14 @@ class _FaceScannerState extends State<FaceScanner> {
                   padding: EdgeInsets.all(30),
                   child: Column(
                     children: [
-                      // Scan button
+                      // Scan button - enabled only when face is detected
                       SizedBox(
                         width: double.infinity,
                         height: 55,
                         child: ElevatedButton(
-                          onPressed: () async{
-                            await _cameraController?.stopImageStream();
-                            if(mounted) {
-                              Navigator.push(
-                                context,
-                                MaterialPageRoute(builder: (context) => Welcome())
-                              );
-                            }
-                            // print('Scanning face...');
-                            // ScaffoldMessenger.of(context).showSnackBar(
-                            //   SnackBar(
-                            //     content: Text('Face scanned successfully!'),
-                            //     backgroundColor: Colors.green,
-                            //   ),
-                            // );
-                          },
+                          onPressed: _faceDetected ? _handleScan : null,
                           style: ElevatedButton.styleFrom(
-                            backgroundColor: Colors.black,
+                            backgroundColor: _faceDetected ? Colors.green : Colors.black,
                             foregroundColor: Colors.white,
                             disabledBackgroundColor: Colors.black.withOpacity(0.5),
                             disabledForegroundColor: Colors.white.withOpacity(0.5),
@@ -292,17 +361,19 @@ class _FaceScannerState extends State<FaceScanner> {
     );
   }
 
-  // Build corner bracket widget with rounded corners
-  Widget _buildCorner(bool isTop, bool isLeft) {
+  // Build corner bracket widget with rounded corners - color changes based on face detection
+  Widget _buildCorner(bool isTop, bool isLeft, bool faceDetected) {
+    Color borderColor = faceDetected ? Colors.green : Colors.white;
+    
     return Container(
       width: 70,
       height: 70,
       decoration: BoxDecoration(
         border: Border(
-          top: isTop ? BorderSide(color: Colors.white, width: 5) : BorderSide.none,
-          bottom: !isTop ? BorderSide(color: Colors.white, width: 5) : BorderSide.none,
-          left: isLeft ? BorderSide(color: Colors.white, width: 5) : BorderSide.none,
-          right: !isLeft ? BorderSide(color: Colors.white, width: 5) : BorderSide.none,
+          top: isTop ? BorderSide(color: borderColor, width: 5) : BorderSide.none,
+          bottom: !isTop ? BorderSide(color: borderColor, width: 5) : BorderSide.none,
+          left: isLeft ? BorderSide(color: borderColor, width: 5) : BorderSide.none,
+          right: !isLeft ? BorderSide(color: borderColor, width: 5) : BorderSide.none,
         ),
         borderRadius: BorderRadius.only(
           topLeft: isTop && isLeft ? Radius.circular(20) : Radius.zero,

@@ -1,27 +1,15 @@
-import 'package:Sentry/student_scanner.dart';
+import 'package:Sentry/screens/kiosk/select_section.dart';
 import 'package:flutter/material.dart';
-import 'package:Sentry/face_scanner.dart';
 
-class SectionSelection extends StatefulWidget {
-  final String subjectName;
-  
-  const SectionSelection({super.key, required this.subjectName});
+class SubjectSelection extends StatefulWidget {
+  const SubjectSelection({super.key});
 
   @override
-  State<SectionSelection> createState() => _SectionSelectionState();
+  State<SubjectSelection> createState() => _SubjectSelectionState();
 }
 
-class _SectionSelectionState extends State<SectionSelection> {
-  String? selectedSection;
-  
-  final List<String> sections = [
-    '101A',
-    '101B',
-    '101C',
-    '101D',
-    '101E',
-    '101F',
-  ];
+class _SubjectSelectionState extends State<SubjectSelection> {
+  String? selectedSubject;
 
   @override
   Widget build(BuildContext context) {
@@ -30,7 +18,6 @@ class _SectionSelectionState extends State<SectionSelection> {
       appBar: AppBar(
         backgroundColor: Colors.white,
         elevation: 0,
-        leading: SizedBox(), // Remove back button
         title: Text(
           'SENTRY',
           style: TextStyle(
@@ -65,8 +52,8 @@ class _SectionSelectionState extends State<SectionSelection> {
                 _buildProgressDot(true),
                 _buildProgressLine(true),
                 _buildProgressDot(true),
-                _buildProgressLine(true),
-                _buildProgressDot(true),
+                _buildProgressLine(false),
+                _buildProgressDot(false),
                 _buildProgressLine(false),
                 _buildProgressDot(false),
               ],
@@ -76,7 +63,7 @@ class _SectionSelectionState extends State<SectionSelection> {
           SizedBox(height: 8),
           
           Text(
-            'Select a Section',
+            'Select a Subject',
             style: TextStyle(
               fontFamily: 'sans',
               fontSize: 16,
@@ -84,44 +71,105 @@ class _SectionSelectionState extends State<SectionSelection> {
             ),
           ),
           
-          SizedBox(height: 16),
-          
-          // Subject name
-          Text(
-            widget.subjectName,
-            style: TextStyle(
-              fontFamily: 'sans',
-              fontSize: 22,
-              fontWeight: FontWeight.bold,
-              color: Colors.black,
-            ),
-          ),
-          
           SizedBox(height: 20),
           
-          // Sections grid
+          // Subjects list
           Expanded(
             child: SingleChildScrollView(
               padding: EdgeInsets.symmetric(horizontal: 24),
               child: Container(
                 padding: EdgeInsets.all(16),
                 decoration: BoxDecoration(
-                  color: Colors.grey[50],
+                  border: Border.all(color: Colors.grey[300]!),
                   borderRadius: BorderRadius.circular(16),
                 ),
-                child: GridView.builder(
-                  shrinkWrap: true,
-                  physics: NeverScrollableScrollPhysics(),
-                  gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
-                    crossAxisCount: 2,
-                    crossAxisSpacing: 12,
-                    mainAxisSpacing: 12,
-                    childAspectRatio: 1.5,
-                  ),
-                  itemCount: sections.length,
-                  itemBuilder: (context, index) {
-                    return _buildSectionCard(sections[index]);
-                  },
+                child: Column(
+                  children: [
+                    // 1st Year
+                    Text(
+                      '1st Year',
+                      style: TextStyle(
+                        fontFamily: 'sans',
+                        fontSize: 18,
+                        fontWeight: FontWeight.w600,
+                        color: Colors.grey[700],
+                      ),
+                    ),
+                    SizedBox(height: 16),
+                    Row(
+                      children: [
+                        Expanded(
+                          child: _buildSubjectCard(
+                            'Philippine\nHistory',
+                            Icons.edit_outlined,
+                            [Color(0xFF00D4AA), Color(0xFF00B894)],
+                          ),
+                        ),
+                        SizedBox(width: 12),
+                        Expanded(
+                          child: _buildSubjectCard(
+                            'Computer\nProgramming',
+                            Icons.memory,
+                            [Color(0xFFFF9068), Color(0xFFFF6B6B)],
+                          ),
+                        ),
+                      ],
+                    ),
+                    
+                    SizedBox(height: 24),
+                    
+                    // 2nd Year
+                    Text(
+                      '2nd Year',
+                      style: TextStyle(
+                        fontFamily: 'sans',
+                        fontSize: 18,
+                        fontWeight: FontWeight.w600,
+                        color: Colors.grey[700],
+                      ),
+                    ),
+                    SizedBox(height: 16),
+                    Row(
+                      children: [
+                        Expanded(
+                          child: _buildSubjectCard(
+                            'Data Structures\nand Algorithm',
+                            Icons.memory,
+                            [Color(0xFF4E9FFF), Color(0xFF0080FF)],
+                          ),
+                        ),
+                        SizedBox(width: 12),
+                        Expanded(
+                          child: _buildSubjectCard(
+                            'Music',
+                            Icons.music_note_outlined,
+                            [Color(0xFFFF9068), Color(0xFFFF6B6B)],
+                          ),
+                        ),
+                      ],
+                    ),
+                    
+                    SizedBox(height: 24),
+                    
+                    // 3rd Year
+                    Text(
+                      '3rd Year',
+                      style: TextStyle(
+                        fontFamily: 'sans',
+                        fontSize: 18,
+                        fontWeight: FontWeight.w600,
+                        color: Colors.grey[700],
+                      ),
+                    ),
+                    SizedBox(height: 16),
+                    Row(
+                      children: [
+                        Expanded(child: Container()), // Empty placeholder
+                        SizedBox(width: 12),
+                        Expanded(child: Container()), // Empty placeholder
+                      ],
+                    ),
+                  ],
                 ),
               ),
             ),
@@ -137,13 +185,7 @@ class _SectionSelectionState extends State<SectionSelection> {
               height: 56,
               child: ElevatedButton(
                 onPressed: () {
-                  if (selectedSection != null) {
-                    var scName = selectedSection;
-                    Navigator.push(
-                      context,
-                      MaterialPageRoute(builder: (context) => StudentScanner(sectionName: scName))
-                    );
-                  }
+                  // Navigation logic
                 },
                 style: ElevatedButton.styleFrom(
                   backgroundColor: Colors.black,
@@ -217,30 +259,23 @@ class _SectionSelectionState extends State<SectionSelection> {
     );
   }
   
-  Widget _buildSectionCard(String section) {
-    bool isSelected = selectedSection == section;
-    
-    
+  Widget _buildSubjectCard(String title, IconData icon, List<Color> gradientColors) {
     return GestureDetector(
       onTap: () {
-        setState(() {
-          selectedSection = section;
-        });
+        Navigator.push(
+          context,
+          MaterialPageRoute(builder: (context) => SectionSelection(subjectName: title))
+        );
       },
       child: Container(
+        height: 110,
         decoration: BoxDecoration(
           gradient: LinearGradient(
             begin: Alignment.topLeft,
             end: Alignment.bottomRight,
-            colors: [
-              Color(0xFFFF9068),
-              Color(0xFFFF6B6B),
-            ],
+            colors: gradientColors,
           ),
           borderRadius: BorderRadius.circular(12),
-          border: isSelected 
-            ? Border.all(color: Colors.blue, width: 3)
-            : null,
         ),
         child: Stack(
           children: [
@@ -248,7 +283,7 @@ class _SectionSelectionState extends State<SectionSelection> {
               bottom: 12,
               right: 12,
               child: Icon(
-                Icons.memory,
+                icon,
                 color: Colors.white.withOpacity(0.7),
                 size: 48,
               ),
@@ -258,12 +293,13 @@ class _SectionSelectionState extends State<SectionSelection> {
               child: Align(
                 alignment: Alignment.topLeft,
                 child: Text(
-                  section,
+                  title,
                   style: TextStyle(
                     fontFamily: 'sans',
-                    fontSize: 16,
+                    fontSize: 14,
                     fontWeight: FontWeight.bold,
                     color: Colors.white,
+                    height: 1.2,
                   ),
                 ),
               ),
