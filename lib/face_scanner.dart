@@ -1,4 +1,4 @@
-import 'package:attendance_kiosk_app/welcome.dart';
+import 'package:Sentry/welcome.dart';
 import 'package:flutter/material.dart';
 import 'package:camera/camera.dart';
 import 'package:google_mlkit_face_detection/google_mlkit_face_detection.dart';

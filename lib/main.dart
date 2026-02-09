@@ -1,5 +1,5 @@
 import 'package:flutter/material.dart';
-import 'package:attendance_kiosk_app/face_scanner.dart';
+import 'package:Sentry/face_scanner.dart';
 
 void main() {
   runApp( MyApp() );
