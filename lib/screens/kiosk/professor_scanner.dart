@@ -6,7 +6,8 @@ import 'dart:io';
 import 'dart:typed_data';
 
 class FaceScanner extends StatefulWidget {
-  const FaceScanner({super.key});
+  final bool isKioskMode;
+  const FaceScanner({super.key, this.isKioskMode = false});
 
   @override
   State<FaceScanner> createState() => _FaceScannerState();
