@@ -110,11 +110,7 @@ class _ManageSubjectsState extends State<ManageSubjects> {
     );
   }
 
-  // ── Assign Sections Dialog ─────────────────────────────────────────
-  // Fixed: reloads assigned sections from DB after every change
-  // Fixed: professor is now REQUIRED when assigning a section
   void _showAssignDialog(Map<String, dynamic> subject) async {
-    // ✅ Only load professors assigned to THIS subject
     final assignedProfessors = await DatabaseHelper.instance
         .getProfessorsBySubject(subject['id']);
     final sections = await DatabaseHelper.instance.getAllSections();
@@ -167,18 +163,26 @@ class _ManageSubjectsState extends State<ManageSubjects> {
           ? const Center(
               child: CircularProgressIndicator(color: Color(0xFF00E676)))
           : _subjects.isEmpty
-              ? Center(
-                  child: Column(
-                    mainAxisAlignment: MainAxisAlignment.center,
-                    children: [
-                      Icon(Icons.menu_book_rounded,
-                          size: 56,
-                          color: const Color(0xFF8B9DC3).withOpacity(0.3)),
-                      const SizedBox(height: 14),
-                      const Text('No subjects yet.\nTap + to add one.',
-                          textAlign: TextAlign.center,
-                          style: TextStyle(color: Color(0xFF8B9DC3))),
-                    ],
+              // ✅ Fix 1: Wrap empty state in SingleChildScrollView so it
+              //    never overflows on small screens
+              ? SingleChildScrollView(
+                  child: SizedBox(
+                    height: MediaQuery.of(context).size.height * 0.7,
+                    child: Center(
+                      child: Column(
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Icon(Icons.menu_book_rounded,
+                              size: 56,
+                              color: const Color(0xFF8B9DC3).withOpacity(0.3)),
+                          const SizedBox(height: 14),
+                          const Text('No subjects yet.\nTap + to add one.',
+                              textAlign: TextAlign.center,
+                              style: TextStyle(color: Color(0xFF8B9DC3))),
+                        ],
+                      ),
+                    ),
                   ),
                 )
               : ListView.separated(
@@ -197,6 +201,8 @@ class _ManageSubjectsState extends State<ManageSubjects> {
                       child: Column(
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
+                          // ✅ Fix 2: subject_name uses Flexible + overflow ellipsis
+                          //    so long names don't push "X units" off screen
                           Row(
                             children: [
                               Container(
@@ -217,14 +223,19 @@ class _ManageSubjectsState extends State<ManageSubjects> {
                                     )),
                               ),
                               const SizedBox(width: 10),
-                              Expanded(
-                                child: Text(s['subject_name'],
-                                    style: const TextStyle(
-                                      color: Colors.white,
-                                      fontWeight: FontWeight.w700,
-                                      fontSize: 15,
-                                    )),
+                              Flexible(
+                                child: Text(
+                                  s['subject_name'],
+                                  overflow: TextOverflow.ellipsis,
+                                  maxLines: 1,
+                                  style: const TextStyle(
+                                    color: Colors.white,
+                                    fontWeight: FontWeight.w700,
+                                    fontSize: 15,
+                                  ),
+                                ),
                               ),
+                              const SizedBox(width: 8),
                               Text('${s['units']} units',
                                   style: const TextStyle(
                                       color: Color(0xFF8B9DC3), fontSize: 12)),
@@ -264,7 +275,7 @@ class _ManageSubjectsState extends State<ManageSubjects> {
   }
 }
 
-// ── Assign Sections Dialog (stateful widget so it can reload from DB) ──────
+// ── Assign Sections Dialog ─────────────────────────────────────────────────
 
 class _AssignSectionsDialog extends StatefulWidget {
   final Map<String, dynamic> subject;
@@ -282,7 +293,6 @@ class _AssignSectionsDialog extends StatefulWidget {
 }
 
 class _AssignSectionsDialogState extends State<_AssignSectionsDialog> {
-  // Maps section_id → assigned professor name (for display)
   Map<int, String> _assignedSections = {};
   bool _loading = true;
 
@@ -292,14 +302,12 @@ class _AssignSectionsDialogState extends State<_AssignSectionsDialog> {
     _reloadAssigned();
   }
 
-  // ✅ Always reload from DB — no stale local state
   Future<void> _reloadAssigned() async {
     setState(() => _loading = true);
     final rows = await DatabaseHelper.instance
         .getSectionsBySubject(widget.subject['id']);
     final map = <int, String>{};
     for (final r in rows) {
-      // DB query aliases sections.id as 'section_id' to avoid collisions
       final rawId = r['section_id'];
       if (rawId == null) continue;
       final sectionId = rawId is int ? rawId : int.tryParse(rawId.toString());
@@ -312,7 +320,6 @@ class _AssignSectionsDialogState extends State<_AssignSectionsDialog> {
     });
   }
 
-  // ✅ Professor is now REQUIRED — no "skip" option
   Future<int?> _pickProfessor() async {
     if (widget.professors.isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
@@ -390,12 +397,10 @@ class _AssignSectionsDialogState extends State<_AssignSectionsDialog> {
     int? profId;
 
     if (widget.professors.length == 1) {
-      // ✅ Only one professor assigned to this subject — auto-select, no dialog
       profId = _toInt(widget.professors.first['id']);
     } else {
-      // Multiple professors — let user pick
       profId = await _pickProfessor();
-      if (profId == null) return; // cancelled
+      if (profId == null) return;
     }
 
     await DatabaseHelper.instance.assignSectionToSubject(
@@ -427,7 +432,6 @@ class _AssignSectionsDialogState extends State<_AssignSectionsDialog> {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              // Header
               const Text('Assign Sections',
                   style: TextStyle(
                       color: Colors.white,
@@ -445,7 +449,6 @@ class _AssignSectionsDialogState extends State<_AssignSectionsDialog> {
                       fontWeight: FontWeight.w600)),
               const SizedBox(height: 8),
 
-              // Section list
               Expanded(
                 child: _loading
                     ? const Center(
@@ -459,8 +462,10 @@ class _AssignSectionsDialogState extends State<_AssignSectionsDialog> {
                             itemCount: widget.sections.length,
                             itemBuilder: (_, i) {
                               final sec = widget.sections[i];
-                              final rawSecId = sec['id']; // getAllSections uses direct query — column is 'id'
-                              final sectionId = rawSecId is int ? rawSecId : int.parse(rawSecId.toString());
+                              final rawSecId = sec['id'];
+                              final sectionId = rawSecId is int
+                                  ? rawSecId
+                                  : int.parse(rawSecId.toString());
                               final isAssigned =
                                   _assignedSections.containsKey(sectionId);
                               final profName =
@@ -632,11 +637,18 @@ class _ActionBtn2 extends StatelessWidget {
             children: [
               Icon(icon, color: color, size: 13),
               const SizedBox(width: 4),
-              Text(label,
+              // ✅ Fix 3: Flexible + overflow on button labels so they
+              //    never push outside the row on narrow screens
+              Flexible(
+                child: Text(
+                  label,
+                  overflow: TextOverflow.ellipsis,
                   style: TextStyle(
                       color: color,
                       fontSize: 10,
-                      fontWeight: FontWeight.w700)),
+                      fontWeight: FontWeight.w700),
+                ),
+              ),
             ],
           ),
         ),

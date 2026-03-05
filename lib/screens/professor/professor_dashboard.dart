@@ -38,7 +38,7 @@ class _ProfessorDashboardState extends State<ProfessorDashboard> {
     showDialog(
       context: context,
       barrierDismissible: true,
-      builder: (ctx) => _LogoutDialog(
+      builder: (ctx) => LogoutDialog(
         onConfirm: () {
           Navigator.of(context).pushAndRemoveUntil(
             MaterialPageRoute(builder: (_) => const HomePage()),
@@ -69,9 +69,9 @@ class _ProfessorDashboardState extends State<ProfessorDashboard> {
 // ─────────────────────────────────────────────────────────────────────────
 // Shared logout dialog — used in dashboard AND subjects page header button
 // ─────────────────────────────────────────────────────────────────────────
-class _LogoutDialog extends StatelessWidget {
+class LogoutDialog extends StatelessWidget {
   final VoidCallback onConfirm;
-  const _LogoutDialog({required this.onConfirm});
+  const LogoutDialog({required this.onConfirm});
 
   @override
   Widget build(BuildContext context) {

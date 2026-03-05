@@ -172,12 +172,10 @@ class _FaceScannerState extends State<FaceScanner> {
     setState(() => _isProcessing = true);
 
     try {
-      // 1. Stop stream + take photo
       await _stopStream();
       await Future.delayed(const Duration(milliseconds: 200));
       final xFile = await _cameraController!.takePicture();
 
-      // 2. Detect face on still photo
       final inputImage = InputImage.fromFile(File(xFile.path));
       final faces =
           await FaceRecognitionService.instance.detectFaces(inputImage);
@@ -187,7 +185,6 @@ class _FaceScannerState extends State<FaceScanner> {
         return;
       }
 
-      // 3. Generate embedding
       final embedding = await FaceRecognitionService.instance
           .generateEmbeddingFromFile(xFile.path, faces.first);
       if (embedding == null) {
@@ -196,7 +193,6 @@ class _FaceScannerState extends State<FaceScanner> {
         return;
       }
 
-      // 4. Match against professors
       final match = FaceRecognitionService.instance
           .findBestMatch(embedding, _enrolledProfessors);
       if (match == null) {
@@ -205,7 +201,6 @@ class _FaceScannerState extends State<FaceScanner> {
         return;
       }
 
-      // 5. Load professor data + subjects
       final profData =
           await DatabaseHelper.instance.getProfessorById(match.id);
       final subjects =
@@ -216,7 +211,6 @@ class _FaceScannerState extends State<FaceScanner> {
         return;
       }
 
-      // ✅ Professor recognized — capture navigator BEFORE any await/pop
       if (!mounted) return;
       final navigator = Navigator.of(context);
 
@@ -235,7 +229,6 @@ class _FaceScannerState extends State<FaceScanner> {
           subjects: subjects,
         ),
       ));
-
     } catch (e) {
       print('Error during scan: $e');
       _showError('Error scanning face. Please try again.');
@@ -303,6 +296,12 @@ class _FaceScannerState extends State<FaceScanner> {
             child: CircularProgressIndicator(color: Colors.white)),
       );
     }
+
+    // ✅ Compute dynamic sizes once from actual screen height
+    final screenHeight = MediaQuery.of(context).size.height;
+    final frameSize = screenHeight * 0.38;         // face frame scales with screen
+    final verticalSpacing = screenHeight * 0.04;   // replaces fixed SizedBox(50)
+
     return Scaffold(
       body: Stack(
         fit: StackFit.expand,
@@ -337,116 +336,140 @@ class _FaceScannerState extends State<FaceScanner> {
           SafeArea(
             child: Column(
               children: [
+                // ── Title ──────────────────────────────────────────
                 Padding(
                   padding: const EdgeInsets.only(top: 20, bottom: 10),
-                  child: Text('SENTRY',
-                      style: const TextStyle(
+                  child: const Text('SENTRY',
+                      style: TextStyle(
                           color: Colors.white,
                           fontSize: 32,
                           fontWeight: FontWeight.bold,
                           fontStyle: FontStyle.italic,
                           letterSpacing: 2)),
                 ),
+
+                // ── Centre content — Expanded so it fills remaining space ──
                 Expanded(
-                  child: Column(
-                    mainAxisAlignment: MainAxisAlignment.center,
-                    children: [
-                      const Text('Scan your face',
-                          style: TextStyle(
-                              color: Colors.white,
-                              fontSize: 24,
-                              fontWeight: FontWeight.w500)),
-                      const SizedBox(height: 50),
-                      SizedBox(
-                        width: 300, height: 380,
-                        child: Stack(children: [
-                          Positioned(
-                              top: 0,
-                              left: 0,
-                              child: _buildCorner(true, true, _faceDetected)),
-                          Positioned(
-                              top: 0,
-                              right: 0,
-                              child: _buildCorner(true, false, _faceDetected)),
-                          Positioned(
-                              bottom: 0,
-                              left: 0,
-                              child: _buildCorner(false, true, _faceDetected)),
-                          Positioned(
-                              bottom: 0,
-                              right: 0,
-                              child: _buildCorner(false, false, _faceDetected)),
-                          if (_faceDetected)
-                            const Center(
-                                child: Icon(Icons.check_circle,
-                                    color: Colors.green, size: 64)),
-                        ]),
+                  child: SingleChildScrollView(
+                    // ✅ SingleChildScrollView prevents overflow on very
+                    //    small screens; on normal screens nothing scrolls
+                    physics: const ClampingScrollPhysics(),
+                    child: Padding(
+                      padding: const EdgeInsets.symmetric(horizontal: 30),
+                      child: Column(
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        children: [
+                          SizedBox(height: verticalSpacing),
+                          const Text('Scan your face',
+                              style: TextStyle(
+                                  color: Colors.white,
+                                  fontSize: 24,
+                                  fontWeight: FontWeight.w500)),
+                          SizedBox(height: verticalSpacing),
+
+                          // ✅ Face frame — size tied to screen height
+                          SizedBox(
+                            width: frameSize * 0.8,
+                            height: frameSize,
+                            child: Stack(children: [
+                              Positioned(
+                                  top: 0,
+                                  left: 0,
+                                  child: _buildCorner(true, true, _faceDetected)),
+                              Positioned(
+                                  top: 0,
+                                  right: 0,
+                                  child: _buildCorner(true, false, _faceDetected)),
+                              Positioned(
+                                  bottom: 0,
+                                  left: 0,
+                                  child: _buildCorner(false, true, _faceDetected)),
+                              Positioned(
+                                  bottom: 0,
+                                  right: 0,
+                                  child: _buildCorner(false, false, _faceDetected)),
+                              if (_faceDetected)
+                                const Center(
+                                    child: Icon(Icons.check_circle,
+                                        color: Colors.green, size: 64)),
+                            ]),
+                          ),
+
+                          SizedBox(height: verticalSpacing),
+                          Text(
+                            _faceDetected
+                                ? 'Face detected! Ready to scan.'
+                                : 'Find a good lighting spot',
+                            style: TextStyle(
+                              color: _faceDetected
+                                  ? Colors.green
+                                  : Colors.white.withOpacity(0.8),
+                              fontSize: 16,
+                              fontWeight: _faceDetected
+                                  ? FontWeight.bold
+                                  : FontWeight.normal,
+                            ),
+                          ),
+                          SizedBox(height: verticalSpacing),
+                        ],
                       ),
-                      const SizedBox(height: 50),
-                      Text(
-                        _faceDetected
-                            ? 'Face detected! Ready to scan.'
-                            : 'Find a good lighting spot',
-                        style: TextStyle(
-                          color: _faceDetected
-                              ? Colors.green
-                              : Colors.white.withOpacity(0.8),
-                          fontSize: 16,
-                          fontWeight: _faceDetected
-                              ? FontWeight.bold
-                              : FontWeight.normal,
+                    ),
+                  ),
+                ),
+
+                // ── Bottom buttons — always anchored at the bottom ──
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(30, 0, 30, 30),
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      SizedBox(
+                        width: double.infinity,
+                        height: 55,
+                        child: ElevatedButton(
+                          onPressed: (_faceDetected && !_isProcessing)
+                              ? _handleScan
+                              : null,
+                          style: ElevatedButton.styleFrom(
+                            backgroundColor: _faceDetected
+                                ? Colors.green
+                                : Colors.black,
+                            foregroundColor: Colors.white,
+                            disabledBackgroundColor:
+                                Colors.black.withOpacity(0.5),
+                            disabledForegroundColor:
+                                Colors.white.withOpacity(0.5),
+                            shape: RoundedRectangleBorder(
+                                borderRadius: BorderRadius.circular(4)),
+                            elevation: 0,
+                          ),
+                          child: const Text('Scan',
+                              style: TextStyle(
+                                  fontSize: 18,
+                                  fontWeight: FontWeight.w500)),
+                        ),
+                      ),
+                      const SizedBox(height: 15),
+                      SizedBox(
+                        width: double.infinity,
+                        height: 55,
+                        child: ElevatedButton(
+                          onPressed: () => Navigator.pop(context),
+                          style: ElevatedButton.styleFrom(
+                            backgroundColor: Colors.white,
+                            foregroundColor: Colors.black,
+                            shape: RoundedRectangleBorder(
+                                borderRadius: BorderRadius.circular(4)),
+                            elevation: 0,
+                          ),
+                          child: const Text('Back',
+                              style: TextStyle(
+                                  fontSize: 18,
+                                  fontWeight: FontWeight.w500)),
                         ),
                       ),
                     ],
                   ),
-                ),
-                Padding(
-                  padding: const EdgeInsets.all(30),
-                  child: Column(children: [
-                    SizedBox(
-                      width: double.infinity, height: 55,
-                      child: ElevatedButton(
-                        onPressed: (_faceDetected && !_isProcessing)
-                            ? _handleScan
-                            : null,
-                        style: ElevatedButton.styleFrom(
-                          backgroundColor: _faceDetected
-                              ? Colors.green
-                              : Colors.black,
-                          foregroundColor: Colors.white,
-                          disabledBackgroundColor:
-                              Colors.black.withOpacity(0.5),
-                          disabledForegroundColor:
-                              Colors.white.withOpacity(0.5),
-                          shape: RoundedRectangleBorder(
-                              borderRadius: BorderRadius.circular(4)),
-                          elevation: 0,
-                        ),
-                        child: const Text('Scan',
-                            style: TextStyle(
-                                fontSize: 18,
-                                fontWeight: FontWeight.w500)),
-                      ),
-                    ),
-                    const SizedBox(height: 15),
-                    SizedBox(
-                      width: double.infinity, height: 55,
-                      child: ElevatedButton(
-                        onPressed: () => Navigator.pop(context),
-                        style: ElevatedButton.styleFrom(
-                          backgroundColor: Colors.white,
-                          foregroundColor: Colors.black,
-                          shape: RoundedRectangleBorder(
-                              borderRadius: BorderRadius.circular(4)),
-                          elevation: 0,
-                        ),
-                        child: const Text('Back',
-                            style: TextStyle(
-                                fontSize: 18,
-                                fontWeight: FontWeight.w500)),
-                      ),
-                    ),
-                  ]),
                 ),
               ],
             ),
@@ -459,7 +482,8 @@ class _FaceScannerState extends State<FaceScanner> {
   Widget _buildCorner(bool isTop, bool isLeft, bool faceDetected) {
     final Color borderColor = faceDetected ? Colors.green : Colors.white;
     return Container(
-      width: 70, height: 70,
+      width: 70,
+      height: 70,
       decoration: BoxDecoration(
         border: Border(
           top: isTop

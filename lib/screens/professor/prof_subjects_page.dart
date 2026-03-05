@@ -5,8 +5,8 @@ import 'package:Sentry/main.dart' show HomePage;
 import 'package:flutter/services.dart';
 import 'package:Sentry/database/database_helper.dart';
 import 'package:Sentry/screens/professor/prof_attendance_calendar.dart';
-import 'package:Sentry/screens/professor/professor_dashboard.dart'
-    show _LogoutDialog;
+import 'package:Sentry/screens/professor/professor_dashboard.dart';
+
 
 class ProfSubjectsPage extends StatefulWidget {
   final Map<String, dynamic> professor;
@@ -35,7 +35,7 @@ class _ProfSubjectsPageState extends State<ProfSubjectsPage> {
   void _logout() {
     showDialog(
       context: context,
-      builder: (_) => _LogoutDialog(
+      builder: (_) => LogoutDialog(
         onConfirm: () =>
             Navigator.of(context).popUntil((r) => r.isFirst),
       ),
