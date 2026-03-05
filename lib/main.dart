@@ -1,7 +1,7 @@
 // lib/main.dart
 
 import 'package:flutter/material.dart';
-import 'package:Sentry/screens/kiosk/professor_scanner.dart';
+import 'package:Sentry/screens/kiosk/kiosk_dashboard.dart';
 import 'package:Sentry/screens/Auth/login.dart';
 import 'package:camera/camera.dart';
 import 'package:google_mlkit_face_detection/google_mlkit_face_detection.dart';
@@ -163,19 +163,15 @@ class _AdminScanDialogState extends State<_AdminScanDialog> {
   @override
   void initState() {
     super.initState();
-    print('🎬 _AdminScanDialogState initState called');
     _initCamera();
     _loadAdmins();
     FaceRecognitionService.instance.initialize();
   }
 
   Future<void> _loadAdmins() async {
-    print('🚀 _loadAdmins called');
     final adminRows = await DatabaseHelper.instance.getAllAdmins();
-    print('🔐 Admin rows found: ${adminRows.length}');
     final admins = <EnrolledFace>[];
     for (final row in adminRows) {
-      print('👤 Admin: ${row['full_name']}, has embedding: ${row['face_embedding'] != null}');
       if (row['face_embedding'] == null) continue;
       try {
         admins.add(EnrolledFace(
@@ -188,7 +184,6 @@ class _AdminScanDialogState extends State<_AdminScanDialog> {
         print('❌ Error decoding embedding: $e');
       }
     }
-    print('✅ Admins with embeddings loaded: ${admins.length}');
     if (mounted) {
       setState(() {
         _enrolledAdmins = admins;
@@ -330,10 +325,8 @@ class _AdminScanDialogState extends State<_AdminScanDialog> {
         return;
       }
 
-      // ── Admin verified ───────────────────────────────────────────
+      // ── Admin verified → go to Kiosk Dashboard ───────────────────
       if (!mounted) return;
-
-      // Capture navigator BEFORE pop so it stays valid after dialog dismissal
       final navigator = Navigator.of(context);
 
       try {
@@ -341,11 +334,15 @@ class _AdminScanDialogState extends State<_AdminScanDialog> {
         _cameraController = null;
       } catch (_) {}
 
-      navigator.pop();
+      navigator.pop(); // close dialog
       await Future.delayed(const Duration(milliseconds: 300));
-      navigator.push(MaterialPageRoute(
-        builder: (_) => const FaceScanner(isKioskMode: true),
-      ));
+
+      // ✅ Push KioskDashboard and clear entire back stack
+      //    so user cannot go back to HomePage from kiosk
+      navigator.pushAndRemoveUntil(
+        MaterialPageRoute(builder: (_) => const KioskDashboard()),
+        (route) => false,
+      );
 
     } catch (e) {
       print('❌ Scan error: $e');

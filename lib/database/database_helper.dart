@@ -23,7 +23,12 @@ class DatabaseHelper {
 
   Future<Database> _initDB() async {
     final path = join(await getDatabasesPath(), 'sentry.db');
-    return openDatabase(path, version: 1, onCreate: _onCreate);
+    return openDatabase(
+      path,
+      version: 2,           // ← bumped from 1 → 2
+      onCreate: _onCreate,
+      onUpgrade: _onUpgrade, // ← handles existing installs
+    );
   }
 
   Future<void> _onCreate(Database db, int version) async {
@@ -113,6 +118,8 @@ class DatabaseHelper {
       )
     ''');
 
+    // ── attendance: one row per student per class day ──────────────────
+    // status: 'present' = timed in only, 'completed' = timed in + timed out
     await db.execute('''
       CREATE TABLE attendance (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -120,9 +127,11 @@ class DatabaseHelper {
         subject_section_id INTEGER NOT NULL,
         date TEXT NOT NULL,
         time_in TEXT NOT NULL,
+        time_out TEXT,
         status TEXT DEFAULT 'present',
         FOREIGN KEY (student_id) REFERENCES students(id) ON DELETE CASCADE,
-        FOREIGN KEY (subject_section_id) REFERENCES subject_sections(id) ON DELETE CASCADE
+        FOREIGN KEY (subject_section_id) REFERENCES subject_sections(id) ON DELETE CASCADE,
+        UNIQUE(student_id, subject_section_id, date)
       )
     ''');
 
@@ -133,11 +142,89 @@ class DatabaseHelper {
     });
   }
 
+  /// Migrate existing database from v1 → v2:
+  /// - Add time_out column to attendance
+  /// - Add UNIQUE constraint (via table recreation, since SQLite
+  ///   doesn't support ADD CONSTRAINT)
+  /// - Collapse duplicate rows (old time_out hack rows) into the
+  ///   proper time_out column on the original time_in row
+  Future<void> _onUpgrade(Database db, int oldVersion, int newVersion) async {
+    if (oldVersion < 2) {
+      // 1. Add time_out column (safe — nullable, no default needed)
+      await db.execute(
+          'ALTER TABLE attendance ADD COLUMN time_out TEXT');
+
+      // 2. Migrate old hack rows: rows with status='time_out' were
+      //    storing the timeout value in the time_in column.
+      //    Copy that value onto the matching 'present' row, then delete
+      //    the duplicate.
+      final timeOutRows = await db.rawQuery('''
+        SELECT * FROM attendance WHERE status = 'time_out'
+      ''');
+
+      for (final row in timeOutRows) {
+        // Find the matching time_in row for same student + section + date
+        final matching = await db.rawQuery('''
+          SELECT id FROM attendance
+          WHERE student_id = ?
+            AND subject_section_id = ?
+            AND date = ?
+            AND status != 'time_out'
+          LIMIT 1
+        ''', [row['student_id'], row['subject_section_id'], row['date']]);
+
+        if (matching.isNotEmpty) {
+          // Write the time_out value and mark as completed
+          await db.update(
+            'attendance',
+            {
+              'time_out': row['time_in'], // old hack stored it here
+              'status': 'completed',
+            },
+            where: 'id = ?',
+            whereArgs: [matching.first['id']],
+          );
+        }
+        // Delete the now-redundant time_out row
+        await db.delete('attendance',
+            where: 'id = ?', whereArgs: [row['id']]);
+      }
+
+      // 3. Recreate attendance table with UNIQUE constraint
+      //    (SQLite can't ADD CONSTRAINT, so we rename → recreate → copy)
+      await db.execute(
+          'ALTER TABLE attendance RENAME TO attendance_old');
+      await db.execute('''
+        CREATE TABLE attendance (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          student_id INTEGER NOT NULL,
+          subject_section_id INTEGER NOT NULL,
+          date TEXT NOT NULL,
+          time_in TEXT NOT NULL,
+          time_out TEXT,
+          status TEXT DEFAULT 'present',
+          FOREIGN KEY (student_id) REFERENCES students(id) ON DELETE CASCADE,
+          FOREIGN KEY (subject_section_id) REFERENCES subject_sections(id) ON DELETE CASCADE,
+          UNIQUE(student_id, subject_section_id, date)
+        )
+      ''');
+      await db.execute('''
+        INSERT INTO attendance
+          (id, student_id, subject_section_id, date, time_in, time_out, status)
+        SELECT
+          id, student_id, subject_section_id, date, time_in, time_out, status
+        FROM attendance_old
+      ''');
+      await db.execute('DROP TABLE attendance_old');
+    }
+  }
+
   // ═══════════════════════════════════════════════════════════════════
   // AUTH
   // ═══════════════════════════════════════════════════════════════════
 
-  Future<Map<String, dynamic>?> loginAdmin(String username, String password) async {
+  Future<Map<String, dynamic>?> loginAdmin(
+      String username, String password) async {
     final db = await database;
     final result = await db.query('admins',
         where: 'username = ? AND password = ?',
@@ -150,7 +237,8 @@ class DatabaseHelper {
     return db.query('admins', where: 'face_embedding IS NOT NULL');
   }
 
-  Future<Map<String, dynamic>?> loginProfessor(String username, String password) async {
+  Future<Map<String, dynamic>?> loginProfessor(
+      String username, String password) async {
     final db = await database;
     final result = await db.query('professors',
         where: 'username = ? AND password = ?',
@@ -178,7 +266,8 @@ class DatabaseHelper {
 
   Future<Map<String, dynamic>?> getProfessorById(int id) async {
     final db = await database;
-    final result = await db.query('professors', where: 'id = ?', whereArgs: [id]);
+    final result =
+        await db.query('professors', where: 'id = ?', whereArgs: [id]);
     return result.isNotEmpty ? result.first : null;
   }
 
@@ -188,7 +277,8 @@ class DatabaseHelper {
     if (updated['password'] != null) {
       updated['password'] = hashPassword(updated['password']);
     }
-    return db.update('professors', updated, where: 'id = ?', whereArgs: [id]);
+    return db.update('professors', updated,
+        where: 'id = ?', whereArgs: [id]);
   }
 
   Future<int> deleteProfessor(int id) async {
@@ -254,7 +344,8 @@ class DatabaseHelper {
   // PROFESSOR ↔ SUBJECT ASSIGNMENTS
   // ═══════════════════════════════════════════════════════════════════
 
-  Future<int> assignSubjectToProfessor(int professorId, int subjectId) async {
+  Future<int> assignSubjectToProfessor(
+      int professorId, int subjectId) async {
     final db = await database;
     return db.insert(
       'professor_subjects',
@@ -263,15 +354,16 @@ class DatabaseHelper {
     );
   }
 
-  Future<int> removeSubjectFromProfessor(int professorId, int subjectId) async {
+  Future<int> removeSubjectFromProfessor(
+      int professorId, int subjectId) async {
     final db = await database;
     return db.delete('professor_subjects',
         where: 'professor_id = ? AND subject_id = ?',
         whereArgs: [professorId, subjectId]);
   }
 
-  /// Subjects assigned to a professor — explicit columns, no ambiguity
-  Future<List<Map<String, dynamic>>> getSubjectsByProfessor(int professorId) async {
+  Future<List<Map<String, dynamic>>> getSubjectsByProfessor(
+      int professorId) async {
     final db = await database;
     return db.rawQuery('''
       SELECT
@@ -287,7 +379,8 @@ class DatabaseHelper {
     ''', [professorId]);
   }
 
-  Future<List<Map<String, dynamic>>> getProfessorsBySubject(int subjectId) async {
+  Future<List<Map<String, dynamic>>> getProfessorsBySubject(
+      int subjectId) async {
     final db = await database;
     return db.rawQuery('''
       SELECT
@@ -328,14 +421,14 @@ class DatabaseHelper {
     );
   }
 
-  Future<int> removeSectionFromSubject(int subjectId, int sectionId) async {
+  Future<int> removeSectionFromSubject(
+      int subjectId, int sectionId) async {
     final db = await database;
     return db.delete('subject_sections',
         where: 'subject_id = ? AND section_id = ?',
         whereArgs: [subjectId, sectionId]);
   }
 
-  /// All subject-section assignments — for Sections > Assignments tab
   Future<List<Map<String, dynamic>>> getSubjectSectionsDetail() async {
     final db = await database;
     return db.rawQuery('''
@@ -360,8 +453,8 @@ class DatabaseHelper {
     ''');
   }
 
-  /// Sections assigned to a subject — explicit columns, no ambiguity
-  Future<List<Map<String, dynamic>>> getSectionsBySubject(int subjectId) async {
+  Future<List<Map<String, dynamic>>> getSectionsBySubject(
+      int subjectId) async {
     final db = await database;
     return db.rawQuery('''
       SELECT
@@ -409,7 +502,8 @@ class DatabaseHelper {
     ''');
   }
 
-  Future<List<Map<String, dynamic>>> getStudentsBySection(int sectionId) async {
+  Future<List<Map<String, dynamic>>> getStudentsBySection(
+      int sectionId) async {
     final db = await database;
     return db.query('students',
         where: 'section_id = ?',
@@ -437,15 +531,14 @@ class DatabaseHelper {
   // FACE EMBEDDINGS
   // ═══════════════════════════════════════════════════════════════════
 
-  Future<List<Map<String, dynamic>>> getEnrolledFacesBySection(int sectionId) async {
+  Future<List<Map<String, dynamic>>> getEnrolledFacesBySection(
+      int sectionId) async {
     final db = await database;
     return db.query('students',
         where: 'section_id = ? AND face_embedding IS NOT NULL',
         whereArgs: [sectionId]);
   }
 
-  /// Get enrolled faces for a specific subject-section assignment.
-  /// Only returns students in the section linked to this subjectSectionId.
   Future<List<Map<String, dynamic>>> getEnrolledFacesBySubjectSection(
       int subjectSectionId) async {
     final db = await database;
@@ -478,50 +571,111 @@ class DatabaseHelper {
   // ATTENDANCE
   // ═══════════════════════════════════════════════════════════════════
 
+  /// Records a time-in. Each student gets ONE row per class day.
+  /// UNIQUE(student_id, subject_section_id, date) prevents duplicates.
   Future<int> markAttendance({
     required int studentId,
     required int subjectSectionId,
     required String date,
     required String timeIn,
-    String status = 'present',
   }) async {
     final db = await database;
-    return db.insert('attendance', {
-      'student_id': studentId,
-      'subject_section_id': subjectSectionId,
-      'date': date,
-      'time_in': timeIn,
-      'status': status,
-    });
+    return db.insert(
+      'attendance',
+      {
+        'student_id': studentId,
+        'subject_section_id': subjectSectionId,
+        'date': date,
+        'time_in': timeIn,
+        'status': 'present',
+      },
+      conflictAlgorithm: ConflictAlgorithm.ignore, // safe re-scan guard
+    );
   }
 
-  Future<bool> alreadyMarkedToday({
+  /// Records a time-out by updating the existing attendance row for today.
+  /// Returns true if a row was found and updated, false if no time-in exists.
+  Future<bool> markTimeOut({
+    required int studentId,
+    required int subjectSectionId,
+    required String date,
+    required String timeOut,
+  }) async {
+    final db = await database;
+    final count = await db.update(
+      'attendance',
+      {
+        'time_out': timeOut,
+        'status': 'completed',
+      },
+      where: 'student_id = ? AND subject_section_id = ? AND date = ?',
+      whereArgs: [studentId, subjectSectionId, date],
+    );
+    return count > 0;
+  }
+
+  /// Returns the attendance row for a student on a specific day, or null.
+  Future<Map<String, dynamic>?> getAttendanceForToday({
     required int studentId,
     required int subjectSectionId,
     required String date,
   }) async {
     final db = await database;
-    final result = await db.query('attendance',
-        where: 'student_id = ? AND subject_section_id = ? AND date = ?',
-        whereArgs: [studentId, subjectSectionId, date]);
-    return result.isNotEmpty;
+    final result = await db.query(
+      'attendance',
+      where: 'student_id = ? AND subject_section_id = ? AND date = ?',
+      whereArgs: [studentId, subjectSectionId, date],
+    );
+    return result.isNotEmpty ? result.first : null;
   }
 
+  /// True if the student already has a time-in row today.
+  Future<bool> alreadyMarkedToday({
+    required int studentId,
+    required int subjectSectionId,
+    required String date,
+  }) async {
+    final row = await getAttendanceForToday(
+      studentId: studentId,
+      subjectSectionId: subjectSectionId,
+      date: date,
+    );
+    return row != null;
+  }
+
+  /// True if the student has timed in but NOT yet timed out today.
+  Future<bool> hasTimedInButNotOut({
+    required int studentId,
+    required int subjectSectionId,
+    required String date,
+  }) async {
+    final row = await getAttendanceForToday(
+      studentId: studentId,
+      subjectSectionId: subjectSectionId,
+      date: date,
+    );
+    return row != null && row['time_out'] == null;
+  }
+
+  /// Fetch all attendance rows for a subject-section, each row is one student
+  /// for one day. Now includes time_out and student_id for the scanner.
   Future<List<Map<String, dynamic>>> getAttendanceBySubjectSection(
       int subjectSectionId) async {
     final db = await database;
     return db.rawQuery('''
       SELECT
         a.id,
+        a.student_id,
         a.date,
         a.time_in,
+        a.time_out,
         a.status,
         st.full_name,
         st.student_id AS student_number
       FROM attendance a
       JOIN students st ON a.student_id = st.id
       WHERE a.subject_section_id = ?
-      ORDER BY a.date DESC, a.time_in DESC
+      ORDER BY a.date DESC, a.time_in ASC
     ''', [subjectSectionId]);
   }
 
@@ -532,13 +686,17 @@ class DatabaseHelper {
   Future<Map<String, int>> getDashboardStats() async {
     final db = await database;
     final professors = Sqflite.firstIntValue(
-            await db.rawQuery('SELECT COUNT(*) FROM professors')) ?? 0;
+            await db.rawQuery('SELECT COUNT(*) FROM professors')) ??
+        0;
     final subjects = Sqflite.firstIntValue(
-            await db.rawQuery('SELECT COUNT(*) FROM subjects')) ?? 0;
+            await db.rawQuery('SELECT COUNT(*) FROM subjects')) ??
+        0;
     final sections = Sqflite.firstIntValue(
-            await db.rawQuery('SELECT COUNT(*) FROM sections')) ?? 0;
+            await db.rawQuery('SELECT COUNT(*) FROM sections')) ??
+        0;
     final students = Sqflite.firstIntValue(
-            await db.rawQuery('SELECT COUNT(*) FROM students')) ?? 0;
+            await db.rawQuery('SELECT COUNT(*) FROM students')) ??
+        0;
     return {
       'professors': professors,
       'subjects': subjects,
