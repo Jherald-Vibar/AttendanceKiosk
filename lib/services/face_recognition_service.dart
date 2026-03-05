@@ -17,14 +17,11 @@ class FaceRecognitionService {
   Interpreter? _interpreter;
   bool _isInitialized = false;
 
-  // ── Tune this threshold: lower = stricter, higher = lenient ──────────
-  static const double THRESHOLD = 0.8;
+  static const double THRESHOLD = 5;
   static const int INPUT_SIZE = 160;
 
-  // ── Initialize ML Kit + FaceNet ───────────────────────────────────────
   Future<void> initialize() async {
     if (_isInitialized) return;
-
     _faceDetector = FaceDetector(
       options: FaceDetectorOptions(
         performanceMode: FaceDetectorMode.accurate,
@@ -32,9 +29,10 @@ class FaceRecognitionService {
         enableClassification: true,
       ),
     );
-
-    _interpreter = await Interpreter.fromAsset('assets/models/facenet.tflite');
+    _interpreter =
+        await Interpreter.fromAsset('assets/models/facenet.tflite');
     _isInitialized = true;
+    print('✅ FaceRecognitionService initialized');
   }
 
   void dispose() {
@@ -43,13 +41,11 @@ class FaceRecognitionService {
     _isInitialized = false;
   }
 
-  // ── Detect faces from InputImage ──────────────────────────────────────
   Future<List<Face>> detectFaces(InputImage inputImage) async {
     await initialize();
     return _faceDetector!.processImage(inputImage);
   }
 
-  // ── Build InputImage from CameraImage (live stream) ───────────────────
   InputImage? buildInputImageFromCamera(
       CameraImage image, CameraDescription camera) {
     try {
@@ -61,13 +57,10 @@ class FaceRecognitionService {
             ? InputImageRotation.rotation270deg
             : InputImageRotation.rotation90deg;
       }
-
       final format = InputImageFormatValue.fromRawValue(image.format.raw);
       if (format == null || image.planes.isEmpty) return null;
-
       final bytes = <int>[];
       for (final p in image.planes) bytes.addAll(p.bytes);
-
       return InputImage.fromBytes(
         bytes: Uint8List.fromList(bytes),
         metadata: InputImageMetadata(
@@ -82,7 +75,6 @@ class FaceRecognitionService {
     }
   }
 
-  // ── Generate 128-D embedding from image file + detected face ──────────
   Future<List<double>?> generateEmbeddingFromFile(
       String imagePath, Face face) async {
     await initialize();
@@ -91,13 +83,14 @@ class FaceRecognitionService {
       final original = img.decodeImage(bytes);
       if (original == null) return null;
       return _extractEmbedding(original, face);
-    } catch (_) {
+    } catch (e) {
+      print('❌ generateEmbeddingFromFile error: $e');
       return null;
     }
   }
 
-  // ── Generate embedding from raw img.Image + face ──────────────────────
-  Future<List<double>?> generateEmbedding(img.Image original, Face face) async {
+  Future<List<double>?> generateEmbedding(
+      img.Image original, Face face) async {
     await initialize();
     return _extractEmbedding(original, face);
   }
@@ -106,15 +99,17 @@ class FaceRecognitionService {
     try {
       final rect = face.boundingBox;
       const padding = 20;
-
-      final x = (rect.left.toInt() - padding).clamp(0, original.width - 1);
-      final y = (rect.top.toInt() - padding).clamp(0, original.height - 1);
+      final x =
+          (rect.left.toInt() - padding).clamp(0, original.width - 1);
+      final y =
+          (rect.top.toInt() - padding).clamp(0, original.height - 1);
       final w = (rect.width.toInt() + padding * 2)
           .clamp(1, original.width - x);
       final h = (rect.height.toInt() + padding * 2)
           .clamp(1, original.height - y);
 
-      final cropped = img.copyCrop(original, x: x, y: y, width: w, height: h);
+      final cropped =
+          img.copyCrop(original, x: x, y: y, width: w, height: h);
       final resized =
           img.copyResize(cropped, width: INPUT_SIZE, height: INPUT_SIZE);
 
@@ -123,7 +118,8 @@ class FaceRecognitionService {
       _interpreter!.run(input, output);
 
       return List<double>.from(output[0]);
-    } catch (_) {
+    } catch (e) {
+      print('❌ _extractEmbedding error: $e');
       return null;
     }
   }
@@ -148,7 +144,6 @@ class FaceRecognitionService {
     );
   }
 
-  // ── Match embedding against enrolled list ─────────────────────────────
   SentryMatch? findBestMatch(
       List<double> query, List<EnrolledFace> enrolled) {
     if (enrolled.isEmpty) return null;
@@ -158,11 +153,14 @@ class FaceRecognitionService {
 
     for (final e in enrolled) {
       final d = _euclidean(query, e.embedding);
+      print('🔍 Comparing with ${e.name} (${e.role}): distance = $d');
       if (d < minDist) {
         minDist = d;
         best = e;
       }
     }
+
+    print('✅ Best: ${best?.name}, dist: $minDist, threshold: $THRESHOLD');
 
     if (minDist < THRESHOLD && best != null) {
       return SentryMatch(
@@ -171,7 +169,8 @@ class FaceRecognitionService {
         role: best.role,
         sectionName: best.sectionName,
         distance: minDist,
-        confidence: ((1 - (minDist / THRESHOLD)) * 100).clamp(0.0, 100.0),
+        confidence:
+            ((1 - (minDist / THRESHOLD)) * 100).clamp(0.0, 100.0),
       );
     }
     return null;
@@ -185,18 +184,17 @@ class FaceRecognitionService {
     return sqrt(sum);
   }
 
-  // ── Serialization ─────────────────────────────────────────────────────
   static String encode(List<double> e) => e.join(',');
   static List<double> decode(String s) =>
       s.split(',').map(double.parse).toList();
 }
 
-// ── Data Models ───────────────────────────────────────────────────────────
+// ── Data Models ───────────────────────────────────────────────────────
 
 class EnrolledFace {
   final int id;
   final String name;
-  final String role; // 'student' | 'professor'
+  final String role;
   final String? sectionName;
   final List<double> embedding;
 

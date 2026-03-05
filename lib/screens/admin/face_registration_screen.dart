@@ -37,6 +37,11 @@ class _FaceRegistrationScreenState extends State<FaceRegistrationScreen>
   bool _isDetecting = false;
   List<double>? _capturedEmbedding;
 
+  // ── 4-shot state ──────────────────────────────────────────────────
+  int _shotsTaken = 0;
+  static const int _totalShots = 4;
+  String _statusMessage = 'Align face inside the frame';
+
   late AnimationController _successCtrl;
 
   Color get _accent => switch (widget.type) {
@@ -104,51 +109,95 @@ class _FaceRegistrationScreenState extends State<FaceRegistrationScreen>
     });
   }
 
+  // ── 4-shot capture with embedding averaging ───────────────────────
   Future<void> _captureFace() async {
     if (_isProcessing || !_faceDetected) return;
-    setState(() => _isProcessing = true);
+    setState(() {
+      _isProcessing = true;
+      _shotsTaken = 0;
+      _statusMessage = 'Starting capture...';
+    });
 
     try {
       await _cameraController!.stopImageStream();
-      final xFile = await _cameraController!.takePicture();
+      await Future.delayed(const Duration(milliseconds: 200));
 
-      // Detect face on still photo
-      final inputImage = InputImage.fromFile(File(xFile.path));
-      final faces = await FaceRecognitionService.instance
-          .detectFaces(inputImage);
+      final List<List<double>> embeddings = [];
 
-      if (faces.isEmpty) {
-        _showError('No face detected. Try again.');
-        _restartStream();
-        return;
+      for (int shot = 1; shot <= _totalShots; shot++) {
+        if (!mounted) return;
+
+        setState(() => _statusMessage = 'Taking shot $shot of $_totalShots...');
+
+        // Take photo
+        final xFile = await _cameraController!.takePicture();
+
+        // Detect face
+        final inputImage = InputImage.fromFile(File(xFile.path));
+        final faces =
+            await FaceRecognitionService.instance.detectFaces(inputImage);
+
+        if (faces.isEmpty) {
+          _showError('Shot $shot: No face detected. Try again.');
+          _resetCapture();
+          return;
+        }
+        if (faces.length > 1) {
+          _showError('Multiple faces detected. Only one person please.');
+          _resetCapture();
+          return;
+        }
+
+        // Generate embedding for this shot
+        final embedding = await FaceRecognitionService.instance
+            .generateEmbeddingFromFile(xFile.path, faces.first);
+
+        if (embedding == null) {
+          _showError('Shot $shot failed. Try better lighting.');
+          _resetCapture();
+          return;
+        }
+
+        embeddings.add(embedding);
+        setState(() => _shotsTaken = shot);
+
+        // Short pause between shots (except after last)
+        if (shot < _totalShots) {
+          await Future.delayed(const Duration(milliseconds: 700));
+        }
       }
-      if (faces.length > 1) {
-        _showError('Multiple faces detected. Only one person visible please.');
-        _restartStream();
-        return;
-      }
 
-      // ── Generate REAL 128-D FaceNet embedding ─────────────────
-      final embedding = await FaceRecognitionService.instance
-          .generateEmbeddingFromFile(xFile.path, faces.first);
-
-      if (embedding == null) {
-        _showError('Could not read face. Better lighting helps.');
-        _restartStream();
-        return;
-      }
+      // ── Average all 4 embeddings ──────────────────────────────────
+      final averaged = _averageEmbeddings(embeddings);
 
       setState(() {
-        _capturedEmbedding = embedding;
+        _capturedEmbedding = averaged;
         _faceCaptured = true;
+        _statusMessage = '✓ Face captured from $_totalShots shots!';
       });
       _successCtrl.forward(from: 0);
+
     } catch (e) {
       _showError('Error: ${e.toString()}');
-      _restartStream();
+      _resetCapture();
     } finally {
       if (mounted) setState(() => _isProcessing = false);
     }
+  }
+
+  /// Average N embeddings into one — reduces noise from single-shot capture
+  List<double> _averageEmbeddings(List<List<double>> embeddings) {
+    final length = embeddings.first.length;
+    final averaged = List<double>.filled(length, 0.0);
+    for (final emb in embeddings) {
+      for (int i = 0; i < length; i++) {
+        averaged[i] += emb[i];
+      }
+    }
+    for (int i = 0; i < length; i++) {
+      averaged[i] /= embeddings.length;
+    }
+    return averaged;
   }
 
   Future<void> _saveFace() async {
@@ -156,7 +205,6 @@ class _FaceRegistrationScreenState extends State<FaceRegistrationScreen>
     setState(() => _isProcessing = true);
 
     try {
-      // Encode list → comma-separated string → store in SQLite
       final embStr = FaceRecognitionService.encode(_capturedEmbedding!);
 
       switch (widget.type) {
@@ -176,12 +224,12 @@ class _FaceRegistrationScreenState extends State<FaceRegistrationScreen>
 
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-          content:
-              Text('${widget.personName} — Face ID saved successfully!'),
+          content: Text(
+              '${widget.personName} — Face ID saved from $_totalShots shots!'),
           backgroundColor: const Color(0xFF00E676),
           behavior: SnackBarBehavior.floating,
-          shape: RoundedRectangleBorder(
-              borderRadius: BorderRadius.circular(10)),
+          shape:
+              RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
         ));
         Navigator.pop(context);
       }
@@ -196,13 +244,28 @@ class _FaceRegistrationScreenState extends State<FaceRegistrationScreen>
     setState(() {
       _faceCaptured = false;
       _capturedEmbedding = null;
+      _shotsTaken = 0;
+      _statusMessage = 'Align face inside the frame';
     });
     _successCtrl.reset();
     _restartStream();
   }
 
+  void _resetCapture() {
+    setState(() {
+      _shotsTaken = 0;
+      _isProcessing = false;
+      _faceDetected = false;
+      _statusMessage = 'Align face inside the frame';
+    });
+    _startLiveDetection();
+  }
+
   void _restartStream() {
-    setState(() { _faceDetected = false; _isProcessing = false; });
+    setState(() {
+      _faceDetected = false;
+      _isProcessing = false;
+    });
     _startLiveDetection();
   }
 
@@ -222,9 +285,11 @@ class _FaceRegistrationScreenState extends State<FaceRegistrationScreen>
       backgroundColor: Colors.black,
       body: Stack(
         children: [
+          // Camera preview
           if (_cameraReady && !_faceCaptured)
             Positioned.fill(child: CameraPreview(_cameraController!)),
 
+          // Success screen
           if (_faceCaptured)
             Positioned.fill(
               child: Container(
@@ -240,8 +305,7 @@ class _FaceRegistrationScreenState extends State<FaceRegistrationScreen>
                         shape: BoxShape.circle,
                         border: Border.all(color: _accent, width: 3),
                       ),
-                      child: Icon(Icons.check_rounded,
-                          color: _accent, size: 70),
+                      child: Icon(Icons.check_rounded, color: _accent, size: 70),
                     ),
                   ),
                 ),
@@ -278,8 +342,10 @@ class _FaceRegistrationScreenState extends State<FaceRegistrationScreen>
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
                           Text('Register Face — $_typeLabel',
-                              style: const TextStyle(color: Colors.white,
-                                  fontWeight: FontWeight.w700, fontSize: 15)),
+                              style: const TextStyle(
+                                  color: Colors.white,
+                                  fontWeight: FontWeight.w700,
+                                  fontSize: 15)),
                           Text(widget.personName,
                               style: TextStyle(color: _accent, fontSize: 13)),
                         ],
@@ -288,7 +354,7 @@ class _FaceRegistrationScreenState extends State<FaceRegistrationScreen>
                   ),
                 ),
 
-                // Face frame
+                // Face frame + status
                 Expanded(
                   child: Column(
                     mainAxisAlignment: MainAxisAlignment.center,
@@ -322,20 +388,48 @@ class _FaceRegistrationScreenState extends State<FaceRegistrationScreen>
                               ),
                             ),
                           ),
+
+                          // Shot progress overlay while capturing
+                          if (_isProcessing && _shotsTaken > 0)
+                            Container(
+                              width: 220, height: 280,
+                              decoration: BoxDecoration(
+                                color: Colors.black.withOpacity(0.5),
+                                borderRadius: BorderRadius.circular(120),
+                              ),
+                              child: Column(
+                                mainAxisAlignment: MainAxisAlignment.center,
+                                children: [
+                                  Text(
+                                    '$_shotsTaken / $_totalShots',
+                                    style: TextStyle(
+                                      color: _accent,
+                                      fontSize: 36,
+                                      fontWeight: FontWeight.w900,
+                                    ),
+                                  ),
+                                  const SizedBox(height: 8),
+                                  Text(
+                                    'shots taken',
+                                    style: TextStyle(
+                                        color: _accent.withOpacity(0.7),
+                                        fontSize: 13),
+                                  ),
+                                ],
+                              ),
+                            ),
                         ],
                       ),
+
                       const SizedBox(height: 24),
+
+                      // Status message
                       AnimatedSwitcher(
                         duration: const Duration(milliseconds: 300),
                         child: Text(
-                          _faceCaptured
-                              ? '✓ Face captured!'
-                              : _faceDetected
-                                  ? 'Face detected — tap Capture!'
-                                  : 'Align face inside the frame',
-                          key: ValueKey(_faceCaptured
-                              ? 'c'
-                              : _faceDetected ? 'd' : 'w'),
+                          _statusMessage,
+                          key: ValueKey(_statusMessage),
+                          textAlign: TextAlign.center,
                           style: TextStyle(
                             color: _faceCaptured
                                 ? _accent
@@ -347,8 +441,37 @@ class _FaceRegistrationScreenState extends State<FaceRegistrationScreen>
                           ),
                         ),
                       ),
-                      if (!_faceCaptured) ...[
-                        const SizedBox(height: 12),
+
+                      const SizedBox(height: 16),
+
+                      // Shot progress dots
+                      if (!_faceCaptured)
+                        Row(
+                          mainAxisAlignment: MainAxisAlignment.center,
+                          children: List.generate(_totalShots, (i) {
+                            final done = i < _shotsTaken;
+                            final active = i == _shotsTaken && _isProcessing;
+                            return AnimatedContainer(
+                              duration: const Duration(milliseconds: 300),
+                              margin: const EdgeInsets.symmetric(horizontal: 5),
+                              width: active ? 18 : 12,
+                              height: 12,
+                              decoration: BoxDecoration(
+                                color: done
+                                    ? _accent
+                                    : active
+                                        ? _accent.withOpacity(0.6)
+                                        : Colors.white24,
+                                borderRadius: BorderRadius.circular(6),
+                              ),
+                            );
+                          }),
+                        ),
+
+                      const SizedBox(height: 12),
+
+                      // Tips (only before capture starts)
+                      if (!_faceCaptured && !_isProcessing)
                         Row(
                           mainAxisAlignment: MainAxisAlignment.center,
                           children: const [
@@ -359,7 +482,12 @@ class _FaceRegistrationScreenState extends State<FaceRegistrationScreen>
                             _Tip(icon: Icons.remove_red_eye_outlined, text: 'Eyes open'),
                           ],
                         ),
-                      ],
+
+                      // Processing label
+                      if (_isProcessing && _shotsTaken == 0)
+                        const Text('Preparing...',
+                            style: TextStyle(
+                                color: Colors.white54, fontSize: 13)),
                     ],
                   ),
                 ),
@@ -370,24 +498,55 @@ class _FaceRegistrationScreenState extends State<FaceRegistrationScreen>
                   child: _faceCaptured
                       ? Column(
                           children: [
+                            // Quality indicator
+                            Container(
+                              padding: const EdgeInsets.symmetric(
+                                  horizontal: 16, vertical: 8),
+                              margin: const EdgeInsets.only(bottom: 16),
+                              decoration: BoxDecoration(
+                                color: _accent.withOpacity(0.1),
+                                borderRadius: BorderRadius.circular(10),
+                                border: Border.all(
+                                    color: _accent.withOpacity(0.3)),
+                              ),
+                              child: Row(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  Icon(Icons.auto_awesome,
+                                      color: _accent, size: 16),
+                                  const SizedBox(width: 8),
+                                  Text(
+                                    'Averaged from $_totalShots shots — high quality',
+                                    style: TextStyle(
+                                        color: _accent,
+                                        fontSize: 12,
+                                        fontWeight: FontWeight.w600),
+                                  ),
+                                ],
+                              ),
+                            ),
                             SizedBox(
                               width: double.infinity, height: 54,
                               child: ElevatedButton.icon(
                                 onPressed: _isProcessing ? null : _saveFace,
                                 icon: const Icon(Icons.save_rounded, size: 20),
                                 label: _isProcessing
-                                    ? const SizedBox(width: 20, height: 20,
+                                    ? const SizedBox(
+                                        width: 20, height: 20,
                                         child: CircularProgressIndicator(
-                                            color: Colors.white, strokeWidth: 2))
+                                            color: Colors.white,
+                                            strokeWidth: 2))
                                     : const Text('Save Face ID',
-                                        style: TextStyle(fontSize: 16,
+                                        style: TextStyle(
+                                            fontSize: 16,
                                             fontWeight: FontWeight.w800)),
                                 style: ElevatedButton.styleFrom(
                                   backgroundColor: _accent,
                                   foregroundColor: Colors.white,
                                   elevation: 0,
                                   shape: RoundedRectangleBorder(
-                                      borderRadius: BorderRadius.circular(14)),
+                                      borderRadius:
+                                          BorderRadius.circular(14)),
                                 ),
                               ),
                             ),
@@ -397,7 +556,8 @@ class _FaceRegistrationScreenState extends State<FaceRegistrationScreen>
                               icon: const Icon(Icons.refresh_rounded,
                                   color: Color(0xFF8B9DC3), size: 18),
                               label: const Text('Retake',
-                                  style: TextStyle(color: Color(0xFF8B9DC3),
+                                  style: TextStyle(
+                                      color: Color(0xFF8B9DC3),
                                       fontWeight: FontWeight.w600)),
                             ),
                           ],
@@ -406,20 +566,23 @@ class _FaceRegistrationScreenState extends State<FaceRegistrationScreen>
                           width: double.infinity, height: 54,
                           child: ElevatedButton.icon(
                             onPressed: (_faceDetected && !_isProcessing)
-                                ? _captureFace : null,
+                                ? _captureFace
+                                : null,
                             icon: _isProcessing
-                                ? const SizedBox(width: 20, height: 20,
+                                ? const SizedBox(
+                                    width: 20, height: 20,
                                     child: CircularProgressIndicator(
                                         color: Colors.white, strokeWidth: 2))
-                                : const Icon(Icons.camera_alt_rounded, size: 22),
+                                : const Icon(Icons.camera_alt_rounded,
+                                    size: 22),
                             label: Text(
                               _isProcessing
-                                  ? 'Processing...'
+                                  ? _statusMessage
                                   : _faceDetected
-                                      ? 'Capture Face'
+                                      ? 'Capture Face (4 shots)'
                                       : 'Waiting for face...',
-                              style: const TextStyle(fontSize: 16,
-                                  fontWeight: FontWeight.w800),
+                              style: const TextStyle(
+                                  fontSize: 16, fontWeight: FontWeight.w800),
                             ),
                             style: ElevatedButton.styleFrom(
                               backgroundColor:
@@ -453,7 +616,8 @@ class _Tip extends StatelessWidget {
     return Row(children: [
       Icon(icon, color: Colors.white38, size: 14),
       const SizedBox(width: 4),
-      Text(text, style: const TextStyle(color: Colors.white38, fontSize: 12)),
+      Text(text,
+          style: const TextStyle(color: Colors.white38, fontSize: 12)),
     ]);
   }
 }
@@ -472,10 +636,14 @@ class _FramePainter extends CustomPainter {
     const c = 28.0;
     canvas.drawLine(const Offset(0, c), const Offset(0, 0), paint);
     canvas.drawLine(const Offset(0, 0), const Offset(c, 0), paint);
-    canvas.drawLine(Offset(size.width - c, 0), Offset(size.width, 0), paint);
-    canvas.drawLine(Offset(size.width, 0), Offset(size.width, c), paint);
-    canvas.drawLine(Offset(0, size.height - c), Offset(0, size.height), paint);
-    canvas.drawLine(Offset(0, size.height), Offset(c, size.height), paint);
+    canvas.drawLine(
+        Offset(size.width - c, 0), Offset(size.width, 0), paint);
+    canvas.drawLine(
+        Offset(size.width, 0), Offset(size.width, c), paint);
+    canvas.drawLine(
+        Offset(0, size.height - c), Offset(0, size.height), paint);
+    canvas.drawLine(
+        Offset(0, size.height), Offset(c, size.height), paint);
     canvas.drawLine(Offset(size.width - c, size.height),
         Offset(size.width, size.height), paint);
     canvas.drawLine(Offset(size.width, size.height),

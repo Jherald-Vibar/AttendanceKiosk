@@ -1,92 +1,117 @@
-import 'package:Sentry/screens/kiosk/subject_section.dart';
+// lib/screens/kiosk/welcome.dart
+
 import 'package:flutter/material.dart';
+import 'package:Sentry/screens/kiosk/subject_selection.dart'; // your existing file
 
 class Welcome extends StatelessWidget {
-  const Welcome({super.key});
+  final Map<String, dynamic>? professor;
+  final List<Map<String, dynamic>>? subjects;
+
+  const Welcome({
+    super.key,
+    this.professor,  // optional so login.dart Welcome() still works
+    this.subjects,
+  });
 
   @override
   Widget build(BuildContext context) {
+    final fullName = professor?['full_name'] ?? 'Professor';
+    final firstName = fullName.split(' ').first;
+    final department = professor?['department'] ?? '';
+
     return Scaffold(
       backgroundColor: Colors.white,
       body: SafeArea(
         child: Column(
           children: [
-            // SENTRY Logo at top
-            SizedBox(height: 40),
-            Text(
+            const SizedBox(height: 40),
+            const Text(
               'SENTRY',
               style: TextStyle(
                 fontFamily: 'sans',
                 fontStyle: FontStyle.italic,
                 fontSize: 36,
-                color: Color(0xFF1E3A8A), // Dark blue color
+                color: Color(0xFF1E3A8A),
                 fontWeight: FontWeight.bold,
                 letterSpacing: 3,
               ),
             ),
-            
-            Spacer(),
-            
-            // Centered content
+
+            const Spacer(),
+
             Column(
               mainAxisAlignment: MainAxisAlignment.center,
               children: [
-                // Profile picture with gold border
+                // Profile circle with gold border — your original design
                 Container(
                   width: 220,
                   height: 220,
                   decoration: BoxDecoration(
                     shape: BoxShape.circle,
                     border: Border.all(
-                      color: Color(0xFFE8B44F), // Gold/yellow border
+                      color: const Color(0xFFE8B44F),
                       width: 12,
                     ),
                   ),
                   child: Container(
-                    decoration: BoxDecoration(
-                      color: Colors.grey[300],
+                    decoration: const BoxDecoration(
+                      color: Color(0xFF1E3A8A),
                       shape: BoxShape.circle,
-                      // Uncomment when you add image
-                      // image: DecorationImage(
-                      //   image: AssetImage('assets/images/profile.png'),
-                      //   fit: BoxFit.cover,
-                      // ),
+                    ),
+                    child: Center(
+                      child: Text(
+                        fullName.substring(0, 1).toUpperCase(),
+                        style: const TextStyle(
+                          color: Colors.white,
+                          fontSize: 72,
+                          fontWeight: FontWeight.bold,
+                        ),
+                      ),
                     ),
                   ),
                 ),
-                
-                SizedBox(height: 50),
-                
-                // Welcome text
+
+                const SizedBox(height: 50),
+
                 Text(
-                  'Welcome, Sir Stephen!',
-                  style: TextStyle(
+                  'Welcome, Sir $firstName!',
+                  style: const TextStyle(
                     fontFamily: 'sans',
                     fontSize: 26,
                     fontWeight: FontWeight.bold,
                     color: Colors.black,
                   ),
                 ),
-                
-                SizedBox(height: 12),
-                
-                // Name subtitle
+
+                const SizedBox(height: 12),
+
                 Text(
-                  'Stephen Forteza',
+                  fullName,
                   style: TextStyle(
                     fontFamily: 'sans',
                     fontSize: 16,
                     color: Colors.grey[500],
                   ),
                 ),
+
+                if (department.isNotEmpty) ...[
+                  const SizedBox(height: 4),
+                  Text(
+                    department,
+                    style: TextStyle(
+                      fontFamily: 'sans',
+                      fontSize: 13,
+                      color: Colors.grey[400],
+                    ),
+                  ),
+                ],
               ],
             ),
-            
-            Spacer(),
-            
-            // Next button at bottom
+
+            const Spacer(),
+
             Padding(
-              padding: EdgeInsets.symmetric(horizontal: 32),
+              padding: const EdgeInsets.symmetric(horizontal: 32),
               child: SizedBox(
                 width: double.infinity,
                 height: 58,
@@ -94,13 +119,18 @@ class Welcome extends StatelessWidget {
                   onPressed: () {
                     Navigator.push(
                       context,
-                      MaterialPageRoute(builder: (context) => SubjectSelection())
+                      MaterialPageRoute(
+                        builder: (context) => SubjectSelection(  // ← correct class name
+                          professor: professor ?? {},
+                          subjects: subjects ?? [],
+                        ),
+                      ),
                     );
                   },
                   style: ElevatedButton.styleFrom(
                     backgroundColor: Colors.black,
                     foregroundColor: Colors.white,
-                    textStyle: TextStyle(
+                    textStyle: const TextStyle(
                       fontFamily: 'sans',
                       fontSize: 18,
                       fontWeight: FontWeight.w600,
@@ -110,12 +140,12 @@ class Welcome extends StatelessWidget {
                     ),
                     elevation: 0,
                   ),
-                  child: Text("Next"),
+                  child: const Text("Next"),
                 ),
               ),
             ),
-            
-            SizedBox(height: 50),
+
+            const SizedBox(height: 50),
           ],
         ),
       ),

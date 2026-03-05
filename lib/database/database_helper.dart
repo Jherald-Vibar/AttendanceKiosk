@@ -16,24 +16,17 @@ class DatabaseHelper {
     return _db!;
   }
 
-  // ── Hash password ─────────────────────────────────────────────────
   static String hashPassword(String password) {
     final bytes = utf8.encode(password);
     return sha256.convert(bytes).toString();
   }
 
-  // ── Init DB ───────────────────────────────────────────────────────
   Future<Database> _initDB() async {
     final path = join(await getDatabasesPath(), 'sentry.db');
-    return openDatabase(
-      path,
-      version: 1,
-      onCreate: _onCreate,
-    );
+    return openDatabase(path, version: 1, onCreate: _onCreate);
   }
 
   Future<void> _onCreate(Database db, int version) async {
-    // ── Admins ──────────────────────────────────────────────────────
     await db.execute('''
       CREATE TABLE admins (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -45,7 +38,6 @@ class DatabaseHelper {
       )
     ''');
 
-    // ── Professors ───────────────────────────────────────────────────
     await db.execute('''
       CREATE TABLE professors (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -60,7 +52,6 @@ class DatabaseHelper {
       )
     ''');
 
-    // ── Subjects ─────────────────────────────────────────────────────
     await db.execute('''
       CREATE TABLE subjects (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -71,7 +62,6 @@ class DatabaseHelper {
       )
     ''');
 
-    // ── Sections ─────────────────────────────────────────────────────
     await db.execute('''
       CREATE TABLE sections (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -82,7 +72,6 @@ class DatabaseHelper {
       )
     ''');
 
-    // ── Professor ↔ Subject Assignment ───────────────────────────────
     await db.execute('''
       CREATE TABLE professor_subjects (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -95,7 +84,6 @@ class DatabaseHelper {
       )
     ''');
 
-    // ── Subject ↔ Section Assignment ─────────────────────────────────
     await db.execute('''
       CREATE TABLE subject_sections (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -112,7 +100,6 @@ class DatabaseHelper {
       )
     ''');
 
-    // ── Students ─────────────────────────────────────────────────────
     await db.execute('''
       CREATE TABLE students (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -126,7 +113,6 @@ class DatabaseHelper {
       )
     ''');
 
-    // ── Attendance ────────────────────────────────────────────────────
     await db.execute('''
       CREATE TABLE attendance (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -140,7 +126,6 @@ class DatabaseHelper {
       )
     ''');
 
-    // ── Pre-seed Admin account ────────────────────────────────────────
     await db.insert('admins', {
       'username': 'admin',
       'password': hashPassword('admin123'),
@@ -152,27 +137,24 @@ class DatabaseHelper {
   // AUTH
   // ═══════════════════════════════════════════════════════════════════
 
-  /// Returns admin map if credentials match, else null
-  Future<Map<String, dynamic>?> loginAdmin(
-      String username, String password) async {
+  Future<Map<String, dynamic>?> loginAdmin(String username, String password) async {
     final db = await database;
-    final result = await db.query(
-      'admins',
-      where: 'username = ? AND password = ?',
-      whereArgs: [username, hashPassword(password)],
-    );
+    final result = await db.query('admins',
+        where: 'username = ? AND password = ?',
+        whereArgs: [username, hashPassword(password)]);
     return result.isNotEmpty ? result.first : null;
   }
 
-  /// Returns professor map if credentials match, else null
-  Future<Map<String, dynamic>?> loginProfessor(
-      String username, String password) async {
+  Future<List<Map<String, dynamic>>> getAllAdmins() async {
     final db = await database;
-    final result = await db.query(
-      'professors',
-      where: 'username = ? AND password = ?',
-      whereArgs: [username, hashPassword(password)],
-    );
+    return db.query('admins', where: 'face_embedding IS NOT NULL');
+  }
+
+  Future<Map<String, dynamic>?> loginProfessor(String username, String password) async {
+    final db = await database;
+    final result = await db.query('professors',
+        where: 'username = ? AND password = ?',
+        whereArgs: [username, hashPassword(password)]);
     return result.isNotEmpty ? result.first : null;
   }
 
@@ -196,8 +178,7 @@ class DatabaseHelper {
 
   Future<Map<String, dynamic>?> getProfessorById(int id) async {
     final db = await database;
-    final result =
-        await db.query('professors', where: 'id = ?', whereArgs: [id]);
+    final result = await db.query('professors', where: 'id = ?', whereArgs: [id]);
     return result.isNotEmpty ? result.first : null;
   }
 
@@ -217,12 +198,8 @@ class DatabaseHelper {
 
   Future<int> saveProfessorFaceEmbedding(int id, String embedding) async {
     final db = await database;
-    return db.update(
-      'professors',
-      {'face_embedding': embedding},
-      where: 'id = ?',
-      whereArgs: [id],
-    );
+    return db.update('professors', {'face_embedding': embedding},
+        where: 'id = ?', whereArgs: [id]);
   }
 
   // ═══════════════════════════════════════════════════════════════════
@@ -277,8 +254,7 @@ class DatabaseHelper {
   // PROFESSOR ↔ SUBJECT ASSIGNMENTS
   // ═══════════════════════════════════════════════════════════════════
 
-  Future<int> assignSubjectToProfessor(
-      int professorId, int subjectId) async {
+  Future<int> assignSubjectToProfessor(int professorId, int subjectId) async {
     final db = await database;
     return db.insert(
       'professor_subjects',
@@ -287,22 +263,23 @@ class DatabaseHelper {
     );
   }
 
-  Future<int> removeSubjectFromProfessor(
-      int professorId, int subjectId) async {
+  Future<int> removeSubjectFromProfessor(int professorId, int subjectId) async {
     final db = await database;
-    return db.delete(
-      'professor_subjects',
-      where: 'professor_id = ? AND subject_id = ?',
-      whereArgs: [professorId, subjectId],
-    );
+    return db.delete('professor_subjects',
+        where: 'professor_id = ? AND subject_id = ?',
+        whereArgs: [professorId, subjectId]);
   }
 
-  /// Get all subjects assigned to a professor
-  Future<List<Map<String, dynamic>>> getSubjectsByProfessor(
-      int professorId) async {
+  /// Subjects assigned to a professor — explicit columns, no ambiguity
+  Future<List<Map<String, dynamic>>> getSubjectsByProfessor(int professorId) async {
     final db = await database;
     return db.rawQuery('''
-      SELECT s.*, ps.assigned_at
+      SELECT
+        s.id          AS id,
+        s.subject_code,
+        s.subject_name,
+        s.units,
+        ps.assigned_at
       FROM subjects s
       JOIN professor_subjects ps ON s.id = ps.subject_id
       WHERE ps.professor_id = ?
@@ -310,12 +287,15 @@ class DatabaseHelper {
     ''', [professorId]);
   }
 
-  /// Get all professors assigned to a subject
-  Future<List<Map<String, dynamic>>> getProfessorsBySubject(
-      int subjectId) async {
+  Future<List<Map<String, dynamic>>> getProfessorsBySubject(int subjectId) async {
     final db = await database;
     return db.rawQuery('''
-      SELECT p.*, ps.assigned_at
+      SELECT
+        p.id          AS id,
+        p.employee_id,
+        p.full_name,
+        p.department,
+        ps.assigned_at
       FROM professors p
       JOIN professor_subjects ps ON p.id = ps.professor_id
       WHERE ps.subject_id = ?
@@ -348,49 +328,56 @@ class DatabaseHelper {
     );
   }
 
-  Future<int> removeSectionFromSubject(
-      int subjectId, int sectionId) async {
+  Future<int> removeSectionFromSubject(int subjectId, int sectionId) async {
     final db = await database;
-    return db.delete(
-      'subject_sections',
-      where: 'subject_id = ? AND section_id = ?',
-      whereArgs: [subjectId, sectionId],
-    );
+    return db.delete('subject_sections',
+        where: 'subject_id = ? AND section_id = ?',
+        whereArgs: [subjectId, sectionId]);
   }
 
-  /// Get all sections with their subject and professor info
+  /// All subject-section assignments — for Sections > Assignments tab
   Future<List<Map<String, dynamic>>> getSubjectSectionsDetail() async {
     final db = await database;
     return db.rawQuery('''
       SELECT
-        ss.id as subject_section_id,
+        ss.id           AS subject_section_id,
+        s.id            AS subject_id,
         s.subject_code,
         s.subject_name,
+        sec.id          AS section_id,
         sec.section_name,
         sec.course,
         sec.year_level,
-        p.full_name as professor_name,
+        p.id            AS professor_id,
+        p.full_name     AS professor_name,
         ss.schedule,
         ss.room
       FROM subject_sections ss
-      JOIN subjects s ON ss.subject_id = s.id
-      JOIN sections sec ON ss.section_id = sec.id
+      JOIN subjects s     ON ss.subject_id  = s.id
+      JOIN sections sec   ON ss.section_id  = sec.id
       LEFT JOIN professors p ON ss.professor_id = p.id
-      ORDER BY s.subject_name ASC
+      ORDER BY s.subject_name ASC, sec.section_name ASC
     ''');
   }
 
-  /// Get sections assigned to a subject
-  Future<List<Map<String, dynamic>>> getSectionsBySubject(
-      int subjectId) async {
+  /// Sections assigned to a subject — explicit columns, no ambiguity
+  Future<List<Map<String, dynamic>>> getSectionsBySubject(int subjectId) async {
     final db = await database;
     return db.rawQuery('''
-      SELECT sec.*, ss.schedule, ss.room, ss.professor_id,
-             p.full_name as professor_name
-      FROM sections sec
-      JOIN subject_sections ss ON sec.id = ss.section_id
+      SELECT
+        sec.id          AS section_id,
+        sec.section_name,
+        sec.course,
+        sec.year_level,
+        ss.schedule,
+        ss.room,
+        p.id            AS professor_id,
+        p.full_name     AS professor_name
+      FROM subject_sections ss
+      JOIN sections sec   ON ss.section_id  = sec.id
       LEFT JOIN professors p ON ss.professor_id = p.id
       WHERE ss.subject_id = ?
+      ORDER BY sec.section_name ASC
     ''', [subjectId]);
   }
 
@@ -406,22 +393,28 @@ class DatabaseHelper {
   Future<List<Map<String, dynamic>>> getAllStudents() async {
     final db = await database;
     return db.rawQuery('''
-      SELECT st.*, sec.section_name, sec.course
+      SELECT
+        st.id           AS id,
+        st.student_id,
+        st.full_name,
+        st.email,
+        st.section_id,
+        st.face_embedding,
+        st.registered_at,
+        sec.section_name,
+        sec.course
       FROM students st
       LEFT JOIN sections sec ON st.section_id = sec.id
       ORDER BY st.full_name ASC
     ''');
   }
 
-  Future<List<Map<String, dynamic>>> getStudentsBySection(
-      int sectionId) async {
+  Future<List<Map<String, dynamic>>> getStudentsBySection(int sectionId) async {
     final db = await database;
-    return db.query(
-      'students',
-      where: 'section_id = ?',
-      whereArgs: [sectionId],
-      orderBy: 'full_name ASC',
-    );
+    return db.query('students',
+        where: 'section_id = ?',
+        whereArgs: [sectionId],
+        orderBy: 'full_name ASC');
   }
 
   Future<int> updateStudent(int id, Map<String, dynamic> data) async {
@@ -436,48 +429,49 @@ class DatabaseHelper {
 
   Future<int> saveStudentFaceEmbedding(int id, String embedding) async {
     final db = await database;
-    return db.update(
-      'students',
-      {'face_embedding': embedding},
-      where: 'id = ?',
-      whereArgs: [id],
-    );
+    return db.update('students', {'face_embedding': embedding},
+        where: 'id = ?', whereArgs: [id]);
   }
 
   // ═══════════════════════════════════════════════════════════════════
-  // FACE EMBEDDINGS — get all for recognition
+  // FACE EMBEDDINGS
   // ═══════════════════════════════════════════════════════════════════
 
-  /// Get all enrolled faces (students) for a section
-  Future<List<Map<String, dynamic>>> getEnrolledFacesBySection(
-      int sectionId) async {
+  Future<List<Map<String, dynamic>>> getEnrolledFacesBySection(int sectionId) async {
     final db = await database;
-    final result = await db.query(
-      'students',
-      where: 'section_id = ? AND face_embedding IS NOT NULL',
-      whereArgs: [sectionId],
-    );
-    return result;
+    return db.query('students',
+        where: 'section_id = ? AND face_embedding IS NOT NULL',
+        whereArgs: [sectionId]);
   }
 
-  /// Get all enrolled faces (all students with face)
+  /// Get enrolled faces for a specific subject-section assignment.
+  /// Only returns students in the section linked to this subjectSectionId.
+  Future<List<Map<String, dynamic>>> getEnrolledFacesBySubjectSection(
+      int subjectSectionId) async {
+    final db = await database;
+    return db.rawQuery('''
+      SELECT
+        st.id           AS id,
+        st.full_name,
+        st.face_embedding,
+        sec.section_name
+      FROM students st
+      JOIN sections sec ON st.section_id = sec.id
+      JOIN subject_sections ss ON ss.section_id = sec.id
+      WHERE ss.id = ? AND st.face_embedding IS NOT NULL
+      ORDER BY st.full_name ASC
+    ''', [subjectSectionId]);
+  }
+
   Future<List<Map<String, dynamic>>> getAllEnrolledFaces() async {
     final db = await database;
-    return db.query(
-      'students',
-      where: 'face_embedding IS NOT NULL',
-    );
+    return db.query('students', where: 'face_embedding IS NOT NULL');
   }
 
-  /// Save admin face embedding
   Future<int> saveAdminFaceEmbedding(int id, String embedding) async {
     final db = await database;
-    return db.update(
-      'admins',
-      {'face_embedding': embedding},
-      where: 'id = ?',
-      whereArgs: [id],
-    );
+    return db.update('admins', {'face_embedding': embedding},
+        where: 'id = ?', whereArgs: [id]);
   }
 
   // ═══════════════════════════════════════════════════════════════════
@@ -507,12 +501,9 @@ class DatabaseHelper {
     required String date,
   }) async {
     final db = await database;
-    final result = await db.query(
-      'attendance',
-      where:
-          'student_id = ? AND subject_section_id = ? AND date = ?',
-      whereArgs: [studentId, subjectSectionId, date],
-    );
+    final result = await db.query('attendance',
+        where: 'student_id = ? AND subject_section_id = ? AND date = ?',
+        whereArgs: [studentId, subjectSectionId, date]);
     return result.isNotEmpty;
   }
 
@@ -520,7 +511,13 @@ class DatabaseHelper {
       int subjectSectionId) async {
     final db = await database;
     return db.rawQuery('''
-      SELECT a.*, st.full_name, st.student_id as student_number
+      SELECT
+        a.id,
+        a.date,
+        a.time_in,
+        a.status,
+        st.full_name,
+        st.student_id AS student_number
       FROM attendance a
       JOIN students st ON a.student_id = st.id
       WHERE a.subject_section_id = ?
@@ -534,14 +531,14 @@ class DatabaseHelper {
 
   Future<Map<String, int>> getDashboardStats() async {
     final db = await database;
-    final professors =
-        Sqflite.firstIntValue(await db.rawQuery('SELECT COUNT(*) FROM professors')) ?? 0;
-    final subjects =
-        Sqflite.firstIntValue(await db.rawQuery('SELECT COUNT(*) FROM subjects')) ?? 0;
-    final sections =
-        Sqflite.firstIntValue(await db.rawQuery('SELECT COUNT(*) FROM sections')) ?? 0;
-    final students =
-        Sqflite.firstIntValue(await db.rawQuery('SELECT COUNT(*) FROM students')) ?? 0;
+    final professors = Sqflite.firstIntValue(
+            await db.rawQuery('SELECT COUNT(*) FROM professors')) ?? 0;
+    final subjects = Sqflite.firstIntValue(
+            await db.rawQuery('SELECT COUNT(*) FROM subjects')) ?? 0;
+    final sections = Sqflite.firstIntValue(
+            await db.rawQuery('SELECT COUNT(*) FROM sections')) ?? 0;
+    final students = Sqflite.firstIntValue(
+            await db.rawQuery('SELECT COUNT(*) FROM students')) ?? 0;
     return {
       'professors': professors,
       'subjects': subjects,

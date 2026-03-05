@@ -6,17 +6,20 @@ import 'package:Sentry/database/database_helper.dart';
 
 class SectionSelection extends StatefulWidget {
   final String subjectName;
+  final Map<String, dynamic> subject; // ✅ full subject map (has subject_id)
 
-  const SectionSelection({super.key, required this.subjectName});
+  const SectionSelection({
+    super.key,
+    required this.subjectName,
+    required this.subject,
+  });
 
   @override
   State<SectionSelection> createState() => _SectionSelectionState();
 }
 
 class _SectionSelectionState extends State<SectionSelection> {
-  // Now stores the full assignment map (has id + section_name)
   Map<String, dynamic>? _selectedAssignment;
-
   List<Map<String, dynamic>> _assignments = [];
   bool _loading = true;
 
@@ -27,19 +30,26 @@ class _SectionSelectionState extends State<SectionSelection> {
   }
 
   Future<void> _loadSections() async {
-    // Load all subject-section assignments from DB
     final all = await DatabaseHelper.instance.getSubjectSectionsDetail();
 
-    // Filter only those matching the current subject
-    final filtered = all
-        .where((a) =>
-            a['subject_name'].toString().toLowerCase() ==
-            widget.subjectName.toLowerCase())
-        .toList();
+    // ✅ Filter by subject_id if available, fallback to name matching
+    final subjectId = widget.subject['id'] ?? widget.subject['subject_id'];
 
-    // If no match by name, show all (fallback)
+    List<Map<String, dynamic>> filtered;
+    if (subjectId != null) {
+      filtered = all
+          .where((a) => a['subject_id'].toString() == subjectId.toString())
+          .toList();
+    } else {
+      filtered = all
+          .where((a) =>
+              a['subject_name'].toString().toLowerCase() ==
+              widget.subjectName.toLowerCase())
+          .toList();
+    }
+
     setState(() {
-      _assignments = filtered.isNotEmpty ? filtered : all;
+      _assignments = filtered.isNotEmpty ? filtered : [];
       _loading = false;
     });
   }
@@ -105,7 +115,6 @@ class _SectionSelectionState extends State<SectionSelection> {
 
           const SizedBox(height: 16),
 
-          // Subject name
           Text(
             widget.subjectName,
             style: const TextStyle(
@@ -122,16 +131,14 @@ class _SectionSelectionState extends State<SectionSelection> {
           Expanded(
             child: _loading
                 ? const Center(
-                    child: CircularProgressIndicator(
-                        color: Color(0xFF1E3A8A)))
+                    child: CircularProgressIndicator(color: Color(0xFF1E3A8A)))
                 : _assignments.isEmpty
                     ? Center(
                         child: Column(
                           mainAxisAlignment: MainAxisAlignment.center,
                           children: [
                             Icon(Icons.groups_rounded,
-                                size: 56,
-                                color: Colors.grey[300]),
+                                size: 56, color: Colors.grey[300]),
                             const SizedBox(height: 12),
                             Text(
                               'No sections found for\n${widget.subjectName}',
@@ -149,8 +156,7 @@ class _SectionSelectionState extends State<SectionSelection> {
                         ),
                       )
                     : SingleChildScrollView(
-                        padding:
-                            const EdgeInsets.symmetric(horizontal: 24),
+                        padding: const EdgeInsets.symmetric(horizontal: 24),
                         child: Container(
                           padding: const EdgeInsets.all(16),
                           decoration: BoxDecoration(
@@ -159,8 +165,7 @@ class _SectionSelectionState extends State<SectionSelection> {
                           ),
                           child: GridView.builder(
                             shrinkWrap: true,
-                            physics:
-                                const NeverScrollableScrollPhysics(),
+                            physics: const NeverScrollableScrollPhysics(),
                             gridDelegate:
                                 const SliverGridDelegateWithFixedCrossAxisCount(
                               crossAxisCount: 2,
@@ -170,8 +175,7 @@ class _SectionSelectionState extends State<SectionSelection> {
                             ),
                             itemCount: _assignments.length,
                             itemBuilder: (context, index) {
-                              return _buildSectionCard(
-                                  _assignments[index]);
+                              return _buildSectionCard(_assignments[index]);
                             },
                           ),
                         ),
@@ -193,7 +197,6 @@ class _SectionSelectionState extends State<SectionSelection> {
                           context,
                           MaterialPageRoute(
                             builder: (context) => StudentScanner(
-                              // ✅ Pass the REAL subject_section_id
                               subjectSectionId:
                                   _selectedAssignment!['subject_section_id'],
                               sectionName:
@@ -255,15 +258,12 @@ class _SectionSelectionState extends State<SectionSelection> {
     );
   }
 
-  // ── Section card — same design as yours ─────────────────────────────
   Widget _buildSectionCard(Map<String, dynamic> assignment) {
     final isSelected = _selectedAssignment?['subject_section_id'] ==
         assignment['subject_section_id'];
 
     return GestureDetector(
-      onTap: () {
-        setState(() => _selectedAssignment = assignment);
-      },
+      onTap: () => setState(() => _selectedAssignment = assignment),
       child: Container(
         decoration: BoxDecoration(
           gradient: const LinearGradient(
@@ -272,9 +272,7 @@ class _SectionSelectionState extends State<SectionSelection> {
             colors: [Color(0xFFFF9068), Color(0xFFFF6B6B)],
           ),
           borderRadius: BorderRadius.circular(12),
-          border: isSelected
-              ? Border.all(color: Colors.blue, width: 3)
-              : null,
+          border: isSelected ? Border.all(color: Colors.blue, width: 3) : null,
           boxShadow: isSelected
               ? [
                   BoxShadow(
@@ -301,7 +299,6 @@ class _SectionSelectionState extends State<SectionSelection> {
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  // Section name
                   Text(
                     assignment['section_name'] ?? '',
                     style: const TextStyle(
@@ -312,7 +309,6 @@ class _SectionSelectionState extends State<SectionSelection> {
                     ),
                   ),
                   const SizedBox(height: 4),
-                  // Course info
                   if (assignment['course'] != null)
                     Text(
                       assignment['course'],
@@ -321,7 +317,6 @@ class _SectionSelectionState extends State<SectionSelection> {
                         color: Colors.white.withOpacity(0.85),
                       ),
                     ),
-                  // Professor
                   if (assignment['professor_name'] != null)
                     Text(
                       assignment['professor_name'],
@@ -334,7 +329,6 @@ class _SectionSelectionState extends State<SectionSelection> {
                 ],
               ),
             ),
-            // Selected checkmark
             if (isSelected)
               Positioned(
                 top: 8,

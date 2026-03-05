@@ -4,7 +4,6 @@ import 'package:flutter/material.dart';
 import 'package:camera/camera.dart';
 import 'package:google_mlkit_face_detection/google_mlkit_face_detection.dart';
 import 'package:intl/intl.dart';
-import 'dart:async';
 import 'dart:io';
 import 'dart:typed_data';
 import 'package:Sentry/database/database_helper.dart';
@@ -32,7 +31,6 @@ class _StudentScannerState extends State<StudentScanner> {
   bool _faceDetected = false;
   bool _isProcessing = false;
 
-  // ── Enrolled faces loaded from SQLite ─────────────────────────────────
   List<EnrolledFace> _enrolledFaces = [];
   bool _dbLoaded = false;
 
@@ -50,12 +48,15 @@ class _StudentScannerState extends State<StudentScanner> {
     super.initState();
     _initializeCamera();
     _loadEnrolledFaces();
-    FaceRecognitionService.instance.initialize(); // warms up FaceNet
+    FaceRecognitionService.instance.initialize();
   }
 
-  // ── Load enrolled faces from DB ──────────────────────────────────────
+  // ── Load ONLY students enrolled in this subject-section ──────────────
   Future<void> _loadEnrolledFaces() async {
-    final rows = await DatabaseHelper.instance.getAllEnrolledFaces();
+    // ✅ Fixed: use subjectSectionId to scope to the correct section only
+    final rows = await DatabaseHelper.instance
+        .getEnrolledFacesBySubjectSection(widget.subjectSectionId);
+
     final faces = <EnrolledFace>[];
     for (final row in rows) {
       if (row['face_embedding'] == null) continue;
@@ -69,6 +70,7 @@ class _StudentScannerState extends State<StudentScanner> {
         ));
       } catch (_) {}
     }
+
     if (mounted) {
       setState(() {
         _enrolledFaces = faces;
@@ -88,7 +90,7 @@ class _StudentScannerState extends State<StudentScanner> {
 
       _cameraController = CameraController(
         frontCamera,
-        ResolutionPreset.high, // high for better FaceNet accuracy
+        ResolutionPreset.high,
         enableAudio: false,
         imageFormatGroup: ImageFormatGroup.nv21,
       );
@@ -100,7 +102,7 @@ class _StudentScannerState extends State<StudentScanner> {
         _cameraController!.startImageStream(_processCameraImage);
       }
     } catch (e) {
-      print('Error initializing camera: $e');
+      debugPrint('Error initializing camera: $e');
     }
   }
 
@@ -111,16 +113,13 @@ class _StudentScannerState extends State<StudentScanner> {
 
     try {
       final inputImage = _convertCameraImage(cameraImage);
-      if (inputImage == null) { _isDetecting = false; return; }
-
-      final faces = await _faceDetector.processImage(inputImage);
-
-      if (mounted) {
-        setState(() => _faceDetected = faces.isNotEmpty);
+      if (inputImage == null) {
+        _isDetecting = false;
+        return;
       }
-    } catch (e) {
-      print('Error detecting face: $e');
-    }
+      final faces = await _faceDetector.processImage(inputImage);
+      if (mounted) setState(() => _faceDetected = faces.isNotEmpty);
+    } catch (_) {}
 
     _isDetecting = false;
   }
@@ -128,37 +127,28 @@ class _StudentScannerState extends State<StudentScanner> {
   InputImage? _convertCameraImage(CameraImage cameraImage) {
     try {
       final camera = _cameraController!.description;
+      final rotation = Platform.isIOS
+          ? InputImageRotation.rotation0deg
+          : camera.lensDirection == CameraLensDirection.front
+              ? InputImageRotation.rotation270deg
+              : InputImageRotation.rotation90deg;
 
-      InputImageRotation rotation;
-      if (Platform.isIOS) {
-        rotation = InputImageRotation.rotation0deg;
-      } else {
-        rotation = camera.lensDirection == CameraLensDirection.front
-            ? InputImageRotation.rotation270deg
-            : InputImageRotation.rotation90deg;
-      }
-
-      final format =
-          InputImageFormatValue.fromRawValue(cameraImage.format.raw);
+      final format = InputImageFormatValue.fromRawValue(cameraImage.format.raw);
       if (format == null || cameraImage.planes.isEmpty) return null;
 
       final allBytes = <int>[];
-      for (final plane in cameraImage.planes) {
-        allBytes.addAll(plane.bytes);
-      }
+      for (final plane in cameraImage.planes) allBytes.addAll(plane.bytes);
 
       return InputImage.fromBytes(
         bytes: Uint8List.fromList(allBytes),
         metadata: InputImageMetadata(
-          size: Size(
-              cameraImage.width.toDouble(), cameraImage.height.toDouble()),
+          size: Size(cameraImage.width.toDouble(), cameraImage.height.toDouble()),
           rotation: rotation,
           format: format,
           bytesPerRow: cameraImage.planes[0].bytesPerRow,
         ),
       );
-    } catch (e) {
-      print('Error converting image: $e');
+    } catch (_) {
       return null;
     }
   }
@@ -169,8 +159,13 @@ class _StudentScannerState extends State<StudentScanner> {
       _showMessage('No face detected. Position your face in the frame.');
       return;
     }
-    if (!_dbLoaded || _enrolledFaces.isEmpty) {
-      _showMessage('No enrolled students yet. Register faces first.');
+    if (!_dbLoaded) {
+      _showMessage('Still loading student data. Please wait.');
+      return;
+    }
+    if (_enrolledFaces.isEmpty) {
+      _showMessage(
+          'No enrolled students in ${widget.sectionName}. Register faces first.');
       return;
     }
 
@@ -183,8 +178,7 @@ class _StudentScannerState extends State<StudentScanner> {
 
       // 2. Detect face on still photo
       final inputImage = InputImage.fromFile(File(xFile.path));
-      final faces =
-          await FaceRecognitionService.instance.detectFaces(inputImage);
+      final faces = await FaceRecognitionService.instance.detectFaces(inputImage);
 
       if (faces.isEmpty) {
         _showMessage('No face detected on capture. Try again.');
@@ -192,7 +186,7 @@ class _StudentScannerState extends State<StudentScanner> {
         return;
       }
 
-      // 3. Generate REAL 128-D FaceNet embedding
+      // 3. Generate 128-D FaceNet embedding
       final embedding = await FaceRecognitionService.instance
           .generateEmbeddingFromFile(xFile.path, faces.first);
 
@@ -202,7 +196,7 @@ class _StudentScannerState extends State<StudentScanner> {
         return;
       }
 
-      // 4. Match against enrolled students
+      // 4. Match against students in THIS section only
       final match = FaceRecognitionService.instance
           .findBestMatch(embedding, _enrolledFaces);
 
@@ -240,7 +234,7 @@ class _StudentScannerState extends State<StudentScanner> {
 
       _restartStream();
     } catch (e) {
-      print('Scan error: $e');
+      debugPrint('Scan error: $e');
       _showMessage('Error during scan. Please try again.');
       _restartStream();
     } finally {
@@ -257,15 +251,14 @@ class _StudentScannerState extends State<StudentScanner> {
   }
 
   void _showMessage(String message) {
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: Text(message),
-        duration: const Duration(seconds: 2),
-        behavior: SnackBarBehavior.floating,
-        backgroundColor: Colors.black87,
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
-      ),
-    );
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+      content: Text(message),
+      duration: const Duration(seconds: 2),
+      behavior: SnackBarBehavior.floating,
+      backgroundColor: Colors.black87,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+    ));
   }
 
   // ── Success dialog ────────────────────────────────────────────────────
@@ -285,7 +278,6 @@ class _StudentScannerState extends State<StudentScanner> {
           child: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
-              // Icon
               Container(
                 width: 72, height: 72,
                 decoration: BoxDecoration(
@@ -303,20 +295,15 @@ class _StudentScannerState extends State<StudentScanner> {
                 ),
               ),
               const SizedBox(height: 16),
-
-              // Name
               Text(
                 name,
                 style: const TextStyle(
-                  color: Colors.white,
-                  fontWeight: FontWeight.w800,
-                  fontSize: 20,
-                ),
+                    color: Colors.white,
+                    fontWeight: FontWeight.w800,
+                    fontSize: 20),
                 textAlign: TextAlign.center,
               ),
               const SizedBox(height: 6),
-
-              // Status
               Text(
                 alreadyMarked
                     ? 'Already marked today'
@@ -330,22 +317,16 @@ class _StudentScannerState extends State<StudentScanner> {
                 ),
               ),
               const SizedBox(height: 4),
-
-              // Time + confidence
               Text(
                 DateFormat('hh:mm:ss a').format(DateTime.now()),
-                style: const TextStyle(
-                    color: Color(0xFF8B9DC3), fontSize: 13),
+                style: const TextStyle(color: Color(0xFF8B9DC3), fontSize: 13),
               ),
               const SizedBox(height: 2),
               Text(
                 'Confidence: ${confidence.toStringAsFixed(1)}%',
-                style: const TextStyle(
-                    color: Color(0xFF8B9DC3), fontSize: 12),
+                style: const TextStyle(color: Color(0xFF8B9DC3), fontSize: 12),
               ),
-
               const SizedBox(height: 20),
-
               SizedBox(
                 width: double.infinity,
                 height: 46,
@@ -400,7 +381,7 @@ class _StudentScannerState extends State<StudentScanner> {
                       fontSize: 18)),
               const SizedBox(height: 6),
               const Text(
-                'This face is not enrolled.\nPlease register with the admin.',
+                'This face is not enrolled in this section.\nPlease register with the admin.',
                 textAlign: TextAlign.center,
                 style: TextStyle(color: Color(0xFF8B9DC3), fontSize: 13),
               ),
@@ -437,9 +418,6 @@ class _StudentScannerState extends State<StudentScanner> {
     super.dispose();
   }
 
-  // ════════════════════════════════════════════════════════════════════
-  // BUILD — keeping your original UI
-  // ════════════════════════════════════════════════════════════════════
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -450,12 +428,7 @@ class _StudentScannerState extends State<StudentScanner> {
           if (_isCameraInitialized && _cameraController != null)
             SizedBox.expand(child: CameraPreview(_cameraController!))
           else
-            Container(
-              color: Colors.black,
-              child: const Center(
-                child: CircularProgressIndicator(color: Colors.white),
-              ),
-            ),
+            const Center(child: CircularProgressIndicator(color: Colors.white)),
 
           // Processing overlay
           if (_isProcessing)
@@ -465,8 +438,7 @@ class _StudentScannerState extends State<StudentScanner> {
                 child: Column(
                   mainAxisSize: MainAxisSize.min,
                   children: [
-                    CircularProgressIndicator(
-                        color: Colors.white, strokeWidth: 2.5),
+                    CircularProgressIndicator(color: Colors.white, strokeWidth: 2.5),
                     SizedBox(height: 16),
                     Text('Recognizing face...',
                         style: TextStyle(
@@ -493,19 +465,17 @@ class _StudentScannerState extends State<StudentScanner> {
                           color: Colors.white,
                           borderRadius: BorderRadius.circular(8),
                         ),
-                        child: const Text(
-                          'SENTRY',
-                          style: TextStyle(
-                            fontSize: 20,
-                            fontWeight: FontWeight.bold,
-                            color: Colors.black,
-                            letterSpacing: 2,
-                          ),
-                        ),
+                        child: const Text('SENTRY',
+                            style: TextStyle(
+                              fontSize: 20,
+                              fontWeight: FontWeight.bold,
+                              color: Colors.black,
+                              letterSpacing: 2,
+                            )),
                       ),
                       const SizedBox(height: 24),
 
-                      // Progress dots
+                      // Progress dots (all filled — final step)
                       Row(
                         mainAxisAlignment: MainAxisAlignment.center,
                         children: [
@@ -520,39 +490,59 @@ class _StudentScannerState extends State<StudentScanner> {
                       ),
                       const SizedBox(height: 16),
 
-                      // Section name + enrolled count
+                      // Section name
                       Text(
                         widget.sectionName,
                         style: const TextStyle(
-                          color: Colors.white,
-                          fontSize: 18,
-                          fontWeight: FontWeight.bold,
-                        ),
+                            color: Colors.white,
+                            fontSize: 18,
+                            fontWeight: FontWeight.bold),
                       ),
                       const SizedBox(height: 4),
+
+                      // Enrolled count badge
                       if (_dbLoaded)
-                        Text(
-                          '${_enrolledFaces.length} students enrolled',
-                          style: TextStyle(
+                        Container(
+                          padding: const EdgeInsets.symmetric(
+                              horizontal: 12, vertical: 4),
+                          decoration: BoxDecoration(
                             color: _enrolledFaces.isEmpty
-                                ? Colors.orange
-                                : Colors.green.shade300,
-                            fontSize: 12,
+                                ? Colors.orange.withOpacity(0.15)
+                                : Colors.green.withOpacity(0.15),
+                            borderRadius: BorderRadius.circular(20),
                           ),
+                          child: Text(
+                            _enrolledFaces.isEmpty
+                                ? '⚠ No enrolled students'
+                                : '${_enrolledFaces.length} students enrolled',
+                            style: TextStyle(
+                              color: _enrolledFaces.isEmpty
+                                  ? Colors.orange
+                                  : Colors.green.shade300,
+                              fontSize: 12,
+                              fontWeight: FontWeight.w600,
+                            ),
+                          ),
+                        )
+                      else
+                        const SizedBox(
+                          height: 20,
+                          width: 20,
+                          child: CircularProgressIndicator(
+                              color: Colors.white, strokeWidth: 1.5),
                         ),
+
                       const SizedBox(height: 12),
 
                       // Time in / Time out toggle
                       Row(
                         mainAxisAlignment: MainAxisAlignment.center,
                         children: [
-                          _buildTimeButton('Time in', _isTimeIn, () {
-                            setState(() => _isTimeIn = true);
-                          }),
+                          _buildTimeButton('Time in', _isTimeIn,
+                              () => setState(() => _isTimeIn = true)),
                           const SizedBox(width: 12),
-                          _buildTimeButton('Time out', !_isTimeIn, () {
-                            setState(() => _isTimeIn = false);
-                          }),
+                          _buildTimeButton('Time out', !_isTimeIn,
+                              () => setState(() => _isTimeIn = false)),
                         ],
                       ),
                     ],
@@ -605,7 +595,9 @@ class _StudentScannerState extends State<StudentScanner> {
                         ? 'Face detected! Ready to scan.'
                         : 'Find a good lighting spot',
                 style: TextStyle(
-                  color: _faceDetected ? Colors.green : Colors.white.withOpacity(0.8),
+                  color: _faceDetected
+                      ? Colors.green
+                      : Colors.white.withOpacity(0.8),
                   fontSize: 14,
                   fontWeight:
                       _faceDetected ? FontWeight.bold : FontWeight.normal,
@@ -632,9 +624,7 @@ class _StudentScannerState extends State<StudentScanner> {
                           shape: RoundedRectangleBorder(
                             borderRadius: BorderRadius.circular(8),
                             side: BorderSide(
-                              color: _faceDetected
-                                  ? Colors.green
-                                  : Colors.white,
+                              color: _faceDetected ? Colors.green : Colors.white,
                               width: 1,
                             ),
                           ),
@@ -672,7 +662,6 @@ class _StudentScannerState extends State<StudentScanner> {
     );
   }
 
-  // ── Your original UI helpers ──────────────────────────────────────────
   Widget _buildProgressDot(bool isActive) {
     return Container(
       width: 12, height: 12,
@@ -691,8 +680,7 @@ class _StudentScannerState extends State<StudentScanner> {
     );
   }
 
-  Widget _buildTimeButton(
-      String label, bool isSelected, VoidCallback onTap) {
+  Widget _buildTimeButton(String label, bool isSelected, VoidCallback onTap) {
     return GestureDetector(
       onTap: onTap,
       child: Container(

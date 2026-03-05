@@ -1,9 +1,13 @@
+// lib/screens/kiosk/professor_scanner.dart
+
 import 'package:Sentry/screens/kiosk/welcome.dart';
 import 'package:flutter/material.dart';
 import 'package:camera/camera.dart';
 import 'package:google_mlkit_face_detection/google_mlkit_face_detection.dart';
 import 'dart:io';
 import 'dart:typed_data';
+import 'package:Sentry/database/database_helper.dart';
+import 'package:Sentry/services/face_recognition_service.dart';
 
 class FaceScanner extends StatefulWidget {
   final bool isKioskMode;
@@ -17,6 +21,12 @@ class _FaceScannerState extends State<FaceScanner> {
   CameraController? _cameraController;
   bool _isDetecting = false;
   bool _faceDetected = false;
+  bool _isProcessing = false;
+  bool _isStreaming = false;
+
+  List<EnrolledFace> _enrolledProfessors = [];
+  bool _dbLoaded = false;
+
   final FaceDetector _faceDetector = FaceDetector(
     options: FaceDetectorOptions(
       enableContours: false,
@@ -30,6 +40,30 @@ class _FaceScannerState extends State<FaceScanner> {
   void initState() {
     super.initState();
     _initializeCamera();
+    _loadProfessors();
+    FaceRecognitionService.instance.initialize();
+  }
+
+  Future<void> _loadProfessors() async {
+    final rows = await DatabaseHelper.instance.getAllProfessors();
+    final faces = <EnrolledFace>[];
+    for (final row in rows) {
+      if (row['face_embedding'] == null) continue;
+      try {
+        faces.add(EnrolledFace(
+          id: row['id'],
+          name: row['full_name'],
+          role: 'professor',
+          embedding: FaceRecognitionService.decode(row['face_embedding']),
+        ));
+      } catch (_) {}
+    }
+    if (mounted) {
+      setState(() {
+        _enrolledProfessors = faces;
+        _dbLoaded = true;
+      });
+    }
   }
 
   Future<void> _initializeCamera() async {
@@ -38,16 +72,12 @@ class _FaceScannerState extends State<FaceScanner> {
       (camera) => camera.lensDirection == CameraLensDirection.front,
       orElse: () => cameras.first,
     );
-
     _cameraController = CameraController(
-      frontCamera,
-      ResolutionPreset.low,
+      frontCamera, ResolutionPreset.high,
       enableAudio: false,
       imageFormatGroup: ImageFormatGroup.nv21,
     );
-
     await _cameraController!.initialize();
-    
     if (mounted) {
       setState(() {});
       _startImageStream();
@@ -55,56 +85,41 @@ class _FaceScannerState extends State<FaceScanner> {
   }
 
   void _startImageStream() {
+    if (_cameraController == null ||
+        !_cameraController!.value.isInitialized ||
+        _isStreaming) return;
     _cameraController!.startImageStream((CameraImage image) async {
-      if (_isDetecting) return;
+      if (_isDetecting || _isProcessing) return;
       _isDetecting = true;
-
       try {
         final inputImage = _inputImageFromCameraImage(image);
         if (inputImage != null) {
           final faces = await _faceDetector.processImage(inputImage);
-          
-          if (mounted) {
-            setState(() {
-              _faceDetected = faces.isNotEmpty;
-            });
-          }
+          if (mounted) setState(() => _faceDetected = faces.isNotEmpty);
         }
       } catch (e) {
         print('Error detecting faces: $e');
       }
-
       _isDetecting = false;
     });
+    _isStreaming = true;
   }
 
   InputImage? _inputImageFromCameraImage(CameraImage image) {
     try {
       final camera = _cameraController!.description;
-      
       InputImageRotation rotation;
-      
       if (Platform.isIOS) {
         rotation = InputImageRotation.rotation0deg;
       } else {
-        if (camera.lensDirection == CameraLensDirection.front) {
-          rotation = InputImageRotation.rotation270deg;
-        } else {
-          rotation = InputImageRotation.rotation90deg;
-        }
+        rotation = camera.lensDirection == CameraLensDirection.front
+            ? InputImageRotation.rotation270deg
+            : InputImageRotation.rotation90deg;
       }
-
       final format = InputImageFormatValue.fromRawValue(image.format.raw);
-      if (format == null) return null;
-
-      if (image.planes.isEmpty) return null;
-
-      // Concatenate all plane bytes for NV21 format
+      if (format == null || image.planes.isEmpty) return null;
       final allBytes = <int>[];
-      for (final plane in image.planes) {
-        allBytes.addAll(plane.bytes);
-      }
-
+      for (final plane in image.planes) allBytes.addAll(plane.bytes);
       return InputImage.fromBytes(
         bytes: Uint8List.fromList(allBytes),
         metadata: InputImageMetadata(
@@ -120,58 +135,159 @@ class _FaceScannerState extends State<FaceScanner> {
     }
   }
 
+  Future<void> _stopStream() async {
+    if (!_isStreaming) return;
+    try {
+      await _cameraController?.stopImageStream();
+    } catch (_) {}
+    _isStreaming = false;
+  }
+
   void _handleScan() async {
     if (!_faceDetected) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text('No face detected. Please position your face in the frame.'),
-          backgroundColor: Colors.red,
-          behavior: SnackBarBehavior.floating,
-        ),
-      );
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+        content: Text('No face detected. Please position your face in the frame.'),
+        backgroundColor: Colors.red,
+        behavior: SnackBarBehavior.floating,
+      ));
+      return;
+    }
+    if (!_dbLoaded) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+        content: Text('Still loading. Please wait.'),
+        backgroundColor: Colors.orange,
+        behavior: SnackBarBehavior.floating,
+      ));
+      return;
+    }
+    if (_enrolledProfessors.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+        content: Text('No professors enrolled yet.'),
+        backgroundColor: Colors.orange,
+        behavior: SnackBarBehavior.floating,
+      ));
       return;
     }
 
+    setState(() => _isProcessing = true);
+
     try {
-      await _cameraController?.stopImageStream();
-      
-      // Show success message
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('Face scanned successfully!'),
-            backgroundColor: Colors.green,
-            behavior: SnackBarBehavior.floating,
-            duration: Duration(seconds: 1),
-          ),
-        );
+      // 1. Stop stream + take photo
+      await _stopStream();
+      await Future.delayed(const Duration(milliseconds: 200));
+      final xFile = await _cameraController!.takePicture();
+
+      // 2. Detect face on still photo
+      final inputImage = InputImage.fromFile(File(xFile.path));
+      final faces =
+          await FaceRecognitionService.instance.detectFaces(inputImage);
+      if (faces.isEmpty) {
+        _showError('No face on capture. Try again.');
+        _restartStream();
+        return;
       }
-      
-      // Wait a moment before navigating
-      await Future.delayed(Duration(milliseconds: 500));
-      
-      if (mounted) {
-        Navigator.push(
-          context,
-          MaterialPageRoute(builder: (context) => Welcome())
-        );
+
+      // 3. Generate embedding
+      final embedding = await FaceRecognitionService.instance
+          .generateEmbeddingFromFile(xFile.path, faces.first);
+      if (embedding == null) {
+        _showError('Could not read face. Try better lighting.');
+        _restartStream();
+        return;
       }
+
+      // 4. Match against professors
+      final match = FaceRecognitionService.instance
+          .findBestMatch(embedding, _enrolledProfessors);
+      if (match == null) {
+        _showUnknownDialog();
+        _restartStream();
+        return;
+      }
+
+      // 5. Load professor data + subjects
+      final profData =
+          await DatabaseHelper.instance.getProfessorById(match.id);
+      final subjects =
+          await DatabaseHelper.instance.getSubjectsByProfessor(match.id);
+      if (profData == null) {
+        _showError('Professor data not found.');
+        _restartStream();
+        return;
+      }
+
+      // ✅ Professor recognized — capture navigator BEFORE any await/pop
+      if (!mounted) return;
+      final navigator = Navigator.of(context);
+
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+        content: Text('Face scanned successfully!'),
+        backgroundColor: Colors.green,
+        behavior: SnackBarBehavior.floating,
+        duration: Duration(seconds: 1),
+      ));
+
+      await Future.delayed(const Duration(milliseconds: 500));
+
+      navigator.push(MaterialPageRoute(
+        builder: (_) => Welcome(
+          professor: profData,
+          subjects: subjects,
+        ),
+      ));
+
     } catch (e) {
       print('Error during scan: $e');
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('Error scanning face. Please try again.'),
-            backgroundColor: Colors.red,
-          ),
-        );
-      }
+      _showError('Error scanning face. Please try again.');
+      _restartStream();
+    } finally {
+      if (mounted) setState(() => _isProcessing = false);
     }
+  }
+
+  void _restartStream() {
+    if (!mounted) return;
+    setState(() {
+      _isProcessing = false;
+      _faceDetected = false;
+      _isStreaming = false;
+    });
+    Future.delayed(const Duration(milliseconds: 300), _startImageStream);
+  }
+
+  void _showError(String msg) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+      content: Text(msg),
+      backgroundColor: Colors.red,
+      behavior: SnackBarBehavior.floating,
+    ));
+  }
+
+  void _showUnknownDialog() {
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Not Recognized'),
+        content: const Text(
+            'Face not found in the system.\nOnly registered professors can proceed.'),
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.pop(ctx),
+              child: const Text('Try Again'))
+        ],
+      ),
+    );
   }
 
   @override
   void dispose() {
-    _cameraController?.stopImageStream();
+    if (_isStreaming) {
+      try {
+        _cameraController?.stopImageStream();
+      } catch (_) {}
+      _isStreaming = false;
+    }
     _cameraController?.dispose();
     _faceDetector.close();
     super.dispose();
@@ -179,180 +295,158 @@ class _FaceScannerState extends State<FaceScanner> {
 
   @override
   Widget build(BuildContext context) {
-    if (_cameraController == null || !_cameraController!.value.isInitialized) {
-      return Scaffold(
+    if (_cameraController == null ||
+        !_cameraController!.value.isInitialized) {
+      return const Scaffold(
         backgroundColor: Colors.black,
-        body: Center(child: CircularProgressIndicator(color: Colors.white)),
+        body: Center(
+            child: CircularProgressIndicator(color: Colors.white)),
       );
     }
-
     return Scaffold(
       body: Stack(
         fit: StackFit.expand,
         children: [
-          // Full-screen camera preview
+          Positioned.fill(child: CameraPreview(_cameraController!)),
           Positioned.fill(
-            child: CameraPreview(_cameraController!),
-          ),
-          
-          // Dark overlay for better visibility
-          Positioned.fill(
-            child: Container(
-              color: Colors.black.withOpacity(0.3),
+              child: Container(color: Colors.black.withOpacity(0.3))),
+
+          // Processing overlay
+          if (_isProcessing)
+            Positioned.fill(
+              child: Container(
+                color: Colors.black54,
+                child: const Center(
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      CircularProgressIndicator(
+                          color: Colors.white, strokeWidth: 2.5),
+                      SizedBox(height: 16),
+                      Text('Identifying professor...',
+                          style: TextStyle(
+                              color: Colors.white,
+                              fontSize: 15,
+                              fontWeight: FontWeight.w600)),
+                    ],
+                  ),
+                ),
+              ),
             ),
-          ),
-          
-          // UI Content
+
           SafeArea(
             child: Column(
               children: [
-                // Header - SENTRY
                 Padding(
-                  padding: EdgeInsets.only(top: 20, bottom: 10),
-                  child: Text(
-                    'SENTRY',
-                    style: TextStyle(
-                      color: Colors.white,
-                      fontSize: 32,
-                      fontWeight: FontWeight.bold,
-                      fontStyle: FontStyle.italic,
-                      letterSpacing: 2,
-                    ),
-                  ),
+                  padding: const EdgeInsets.only(top: 20, bottom: 10),
+                  child: Text('SENTRY',
+                      style: const TextStyle(
+                          color: Colors.white,
+                          fontSize: 32,
+                          fontWeight: FontWeight.bold,
+                          fontStyle: FontStyle.italic,
+                          letterSpacing: 2)),
                 ),
-                
-                // Main content area
                 Expanded(
                   child: Column(
                     mainAxisAlignment: MainAxisAlignment.center,
                     children: [
-                      Text(
-                        'Scan your face',
-                        style: TextStyle(
-                          color: Colors.white,
-                          fontSize: 24,
-                          fontWeight: FontWeight.w500,
-                        ),
-                      ),
-                      SizedBox(height: 50),
-                      
-                      // Face frame with rounded corners - changes color based on detection
-                      Container(
-                        width: 300,
-                        height: 380,
-                        child: Stack(
-                          children: [
-                            // Corner brackets - color changes when face detected
-                            Positioned(
+                      const Text('Scan your face',
+                          style: TextStyle(
+                              color: Colors.white,
+                              fontSize: 24,
+                              fontWeight: FontWeight.w500)),
+                      const SizedBox(height: 50),
+                      SizedBox(
+                        width: 300, height: 380,
+                        child: Stack(children: [
+                          Positioned(
                               top: 0,
                               left: 0,
-                              child: _buildCorner(true, true, _faceDetected),
-                            ),
-                            Positioned(
+                              child: _buildCorner(true, true, _faceDetected)),
+                          Positioned(
                               top: 0,
                               right: 0,
-                              child: _buildCorner(true, false, _faceDetected),
-                            ),
-                            Positioned(
+                              child: _buildCorner(true, false, _faceDetected)),
+                          Positioned(
                               bottom: 0,
                               left: 0,
-                              child: _buildCorner(false, true, _faceDetected),
-                            ),
-                            Positioned(
+                              child: _buildCorner(false, true, _faceDetected)),
+                          Positioned(
                               bottom: 0,
                               right: 0,
-                              child: _buildCorner(false, false, _faceDetected),
-                            ),
-                            
-                            // Center checkmark when face is detected
-                            if (_faceDetected)
-                              Center(
-                                child: Icon(
-                                  Icons.check_circle,
-                                  color: Colors.green,
-                                  size: 64,
-                                ),
-                              ),
-                          ],
-                        ),
+                              child: _buildCorner(false, false, _faceDetected)),
+                          if (_faceDetected)
+                            const Center(
+                                child: Icon(Icons.check_circle,
+                                    color: Colors.green, size: 64)),
+                        ]),
                       ),
-                      
-                      SizedBox(height: 50),
+                      const SizedBox(height: 50),
                       Text(
-                        _faceDetected 
-                          ? 'Face detected! Ready to scan.'
-                          : 'Find a good lighting spot',
+                        _faceDetected
+                            ? 'Face detected! Ready to scan.'
+                            : 'Find a good lighting spot',
                         style: TextStyle(
-                          color: _faceDetected 
-                            ? Colors.green
-                            : Colors.white.withOpacity(0.8),
+                          color: _faceDetected
+                              ? Colors.green
+                              : Colors.white.withOpacity(0.8),
                           fontSize: 16,
-                          fontWeight: _faceDetected ? FontWeight.bold : FontWeight.normal,
+                          fontWeight: _faceDetected
+                              ? FontWeight.bold
+                              : FontWeight.normal,
                         ),
                       ),
                     ],
                   ),
                 ),
-                
-                // Buttons
                 Padding(
-                  padding: EdgeInsets.all(30),
-                  child: Column(
-                    children: [
-                      // Scan button - enabled only when face is detected
-                      SizedBox(
-                        width: double.infinity,
-                        height: 55,
-                        child: ElevatedButton(
-                          onPressed: _faceDetected ? _handleScan : null,
-                          style: ElevatedButton.styleFrom(
-                            backgroundColor: _faceDetected ? Colors.green : Colors.black,
-                            foregroundColor: Colors.white,
-                            disabledBackgroundColor: Colors.black.withOpacity(0.5),
-                            disabledForegroundColor: Colors.white.withOpacity(0.5),
-                            shape: RoundedRectangleBorder(
-                              borderRadius: BorderRadius.circular(4),
-                            ),
-                            elevation: 0,
-                          ),
-                          child: Text(
-                            'Scan',
-                            style: TextStyle(
-                              fontSize: 18,
-                              fontWeight: FontWeight.w500,
-                            ),
-                          ),
+                  padding: const EdgeInsets.all(30),
+                  child: Column(children: [
+                    SizedBox(
+                      width: double.infinity, height: 55,
+                      child: ElevatedButton(
+                        onPressed: (_faceDetected && !_isProcessing)
+                            ? _handleScan
+                            : null,
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: _faceDetected
+                              ? Colors.green
+                              : Colors.black,
+                          foregroundColor: Colors.white,
+                          disabledBackgroundColor:
+                              Colors.black.withOpacity(0.5),
+                          disabledForegroundColor:
+                              Colors.white.withOpacity(0.5),
+                          shape: RoundedRectangleBorder(
+                              borderRadius: BorderRadius.circular(4)),
+                          elevation: 0,
                         ),
-                      ),
-                      SizedBox(height: 15),
-                      
-                      // Back button
-                      SizedBox(
-                        width: double.infinity,
-                        height: 55,
-                        child: ElevatedButton(
-                          onPressed: () {
-                            Navigator.pop(context);
-                          },
-                          style: ElevatedButton.styleFrom(
-                            backgroundColor: Colors.white,
-                            foregroundColor: Colors.black,
-                            shape: RoundedRectangleBorder(
-                              borderRadius: BorderRadius.circular(4),
-                            ),
-                            elevation: 0,
-                          ),
-                          child: Text(
-                            'Back',
+                        child: const Text('Scan',
                             style: TextStyle(
-                              fontSize: 18,
-                              fontWeight: FontWeight.w500,
-                            ),
-                          ),
-                        ),
+                                fontSize: 18,
+                                fontWeight: FontWeight.w500)),
                       ),
-                    ],
-                  ),
+                    ),
+                    const SizedBox(height: 15),
+                    SizedBox(
+                      width: double.infinity, height: 55,
+                      child: ElevatedButton(
+                        onPressed: () => Navigator.pop(context),
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: Colors.white,
+                          foregroundColor: Colors.black,
+                          shape: RoundedRectangleBorder(
+                              borderRadius: BorderRadius.circular(4)),
+                          elevation: 0,
+                        ),
+                        child: const Text('Back',
+                            style: TextStyle(
+                                fontSize: 18,
+                                fontWeight: FontWeight.w500)),
+                      ),
+                    ),
+                  ]),
                 ),
               ],
             ),
@@ -362,25 +456,38 @@ class _FaceScannerState extends State<FaceScanner> {
     );
   }
 
-  // Build corner bracket widget with rounded corners - color changes based on face detection
   Widget _buildCorner(bool isTop, bool isLeft, bool faceDetected) {
-    Color borderColor = faceDetected ? Colors.green : Colors.white;
-    
+    final Color borderColor = faceDetected ? Colors.green : Colors.white;
     return Container(
-      width: 70,
-      height: 70,
+      width: 70, height: 70,
       decoration: BoxDecoration(
         border: Border(
-          top: isTop ? BorderSide(color: borderColor, width: 5) : BorderSide.none,
-          bottom: !isTop ? BorderSide(color: borderColor, width: 5) : BorderSide.none,
-          left: isLeft ? BorderSide(color: borderColor, width: 5) : BorderSide.none,
-          right: !isLeft ? BorderSide(color: borderColor, width: 5) : BorderSide.none,
+          top: isTop
+              ? BorderSide(color: borderColor, width: 5)
+              : BorderSide.none,
+          bottom: !isTop
+              ? BorderSide(color: borderColor, width: 5)
+              : BorderSide.none,
+          left: isLeft
+              ? BorderSide(color: borderColor, width: 5)
+              : BorderSide.none,
+          right: !isLeft
+              ? BorderSide(color: borderColor, width: 5)
+              : BorderSide.none,
         ),
         borderRadius: BorderRadius.only(
-          topLeft: isTop && isLeft ? Radius.circular(20) : Radius.zero,
-          topRight: isTop && !isLeft ? Radius.circular(20) : Radius.zero,
-          bottomLeft: !isTop && isLeft ? Radius.circular(20) : Radius.zero,
-          bottomRight: !isTop && !isLeft ? Radius.circular(20) : Radius.zero,
+          topLeft: isTop && isLeft
+              ? const Radius.circular(20)
+              : Radius.zero,
+          topRight: isTop && !isLeft
+              ? const Radius.circular(20)
+              : Radius.zero,
+          bottomLeft: !isTop && isLeft
+              ? const Radius.circular(20)
+              : Radius.zero,
+          bottomRight: !isTop && !isLeft
+              ? const Radius.circular(20)
+              : Radius.zero,
         ),
       ),
     );

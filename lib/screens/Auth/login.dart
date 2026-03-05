@@ -1,5 +1,6 @@
 // lib/screens/login_screen.dart
 
+import 'package:Sentry/screens/professor/professor_dashboard.dart';
 import 'package:flutter/material.dart';
 import 'package:Sentry/database/database_helper.dart';
 import 'package:Sentry/screens/admin/admin_dashboard.dart';
@@ -73,7 +74,7 @@ class _LoginScreenState extends State<LoginScreen>
         if (mounted) {
           // Navigate to professor's welcome/dashboard
           Navigator.pushReplacement(context,
-            MaterialPageRoute(builder: (_) => const Welcome()));
+            MaterialPageRoute(builder: (_) => ProfessorDashboard(professor: professor),));
         }
       }
     } finally {
