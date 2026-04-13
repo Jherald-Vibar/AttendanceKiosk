@@ -4,6 +4,7 @@ import 'package:sqflite/sqflite.dart';
 import 'package:path/path.dart';
 import 'package:crypto/crypto.dart';
 import 'dart:convert';
+import 'package:Sentry/services/sync_service.dart';
 
 class DatabaseHelper {
   static final DatabaseHelper instance = DatabaseHelper._();
@@ -25,9 +26,9 @@ class DatabaseHelper {
     final path = join(await getDatabasesPath(), 'sentry.db');
     return openDatabase(
       path,
-      version: 2,           // ← bumped from 1 → 2
+      version: 2,
       onCreate: _onCreate,
-      onUpgrade: _onUpgrade, // ← handles existing installs
+      onUpgrade: _onUpgrade,
     );
   }
 
@@ -118,8 +119,6 @@ class DatabaseHelper {
       )
     ''');
 
-    // ── attendance: one row per student per class day ──────────────────
-    // status: 'present' = timed in only, 'completed' = timed in + timed out
     await db.execute('''
       CREATE TABLE attendance (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -142,28 +141,15 @@ class DatabaseHelper {
     });
   }
 
-  /// Migrate existing database from v1 → v2:
-  /// - Add time_out column to attendance
-  /// - Add UNIQUE constraint (via table recreation, since SQLite
-  ///   doesn't support ADD CONSTRAINT)
-  /// - Collapse duplicate rows (old time_out hack rows) into the
-  ///   proper time_out column on the original time_in row
   Future<void> _onUpgrade(Database db, int oldVersion, int newVersion) async {
     if (oldVersion < 2) {
-      // 1. Add time_out column (safe — nullable, no default needed)
-      await db.execute(
-          'ALTER TABLE attendance ADD COLUMN time_out TEXT');
+      await db.execute('ALTER TABLE attendance ADD COLUMN time_out TEXT');
 
-      // 2. Migrate old hack rows: rows with status='time_out' were
-      //    storing the timeout value in the time_in column.
-      //    Copy that value onto the matching 'present' row, then delete
-      //    the duplicate.
       final timeOutRows = await db.rawQuery('''
         SELECT * FROM attendance WHERE status = 'time_out'
       ''');
 
       for (final row in timeOutRows) {
-        // Find the matching time_in row for same student + section + date
         final matching = await db.rawQuery('''
           SELECT id FROM attendance
           WHERE student_id = ?
@@ -174,26 +160,21 @@ class DatabaseHelper {
         ''', [row['student_id'], row['subject_section_id'], row['date']]);
 
         if (matching.isNotEmpty) {
-          // Write the time_out value and mark as completed
           await db.update(
             'attendance',
             {
-              'time_out': row['time_in'], // old hack stored it here
+              'time_out': row['time_in'],
               'status': 'completed',
             },
             where: 'id = ?',
             whereArgs: [matching.first['id']],
           );
         }
-        // Delete the now-redundant time_out row
         await db.delete('attendance',
             where: 'id = ?', whereArgs: [row['id']]);
       }
 
-      // 3. Recreate attendance table with UNIQUE constraint
-      //    (SQLite can't ADD CONSTRAINT, so we rename → recreate → copy)
-      await db.execute(
-          'ALTER TABLE attendance RENAME TO attendance_old');
+      await db.execute('ALTER TABLE attendance RENAME TO attendance_old');
       await db.execute('''
         CREATE TABLE attendance (
           id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -217,6 +198,55 @@ class DatabaseHelper {
       ''');
       await db.execute('DROP TABLE attendance_old');
     }
+  }
+
+  // ═══════════════════════════════════════════════════════════════════
+  // SEED FROM SUPABASE (new device / first launch)
+  // ═══════════════════════════════════════════════════════════════════
+
+  /// Pulls all data from Supabase and inserts into local SQLite.
+  /// Uses ConflictAlgorithm.replace so it is safe to call again
+  /// if you want to force a full re-sync.
+  Future<void> seedFromSupabase() async {
+    await SyncService.instance.pullAll((table, rows) async {
+      final db = await database;
+      for (final row in rows) {
+        try {
+          switch (table) {
+            case 'professors':
+              await db.insert('professors', row,
+                  conflictAlgorithm: ConflictAlgorithm.replace);
+              break;
+            case 'subjects':
+              await db.insert('subjects', row,
+                  conflictAlgorithm: ConflictAlgorithm.replace);
+              break;
+            case 'sections':
+              await db.insert('sections', row,
+                  conflictAlgorithm: ConflictAlgorithm.replace);
+              break;
+            case 'professor_subjects':
+              await db.insert('professor_subjects', row,
+                  conflictAlgorithm: ConflictAlgorithm.replace);
+              break;
+            case 'subject_sections':
+              await db.insert('subject_sections', row,
+                  conflictAlgorithm: ConflictAlgorithm.replace);
+              break;
+            case 'students':
+              await db.insert('students', row,
+                  conflictAlgorithm: ConflictAlgorithm.replace);
+              break;
+            case 'attendance':
+              await db.insert('attendance', row,
+                  conflictAlgorithm: ConflictAlgorithm.replace);
+              break;
+          }
+        } catch (e) {
+          print('Seed error ($table): $e');
+        }
+      }
+    });
   }
 
   // ═══════════════════════════════════════════════════════════════════
@@ -256,7 +286,14 @@ class DatabaseHelper {
     if (hashed['password'] != null) {
       hashed['password'] = hashPassword(hashed['password']);
     }
-    return db.insert('professors', hashed);
+    final id = await db.insert('professors', hashed);
+
+    // ── SYNC ────────────────────────────────────────────────────────
+    final toSync = Map<String, dynamic>.from(hashed)..['id'] = id;
+    await SyncService.instance.pushProfessor(toSync);
+    // ────────────────────────────────────────────────────────────────
+
+    return id;
   }
 
   Future<List<Map<String, dynamic>>> getAllProfessors() async {
@@ -277,8 +314,15 @@ class DatabaseHelper {
     if (updated['password'] != null) {
       updated['password'] = hashPassword(updated['password']);
     }
-    return db.update('professors', updated,
+    final count = await db.update('professors', updated,
         where: 'id = ?', whereArgs: [id]);
+
+    // ── SYNC ────────────────────────────────────────────────────────
+    final toSync = Map<String, dynamic>.from(updated)..['id'] = id;
+    await SyncService.instance.pushProfessor(toSync);
+    // ────────────────────────────────────────────────────────────────
+
+    return count;
   }
 
   Future<int> deleteProfessor(int id) async {
@@ -298,7 +342,14 @@ class DatabaseHelper {
 
   Future<int> insertSubject(Map<String, dynamic> data) async {
     final db = await database;
-    return db.insert('subjects', data);
+    final id = await db.insert('subjects', data);
+
+    // ── SYNC ────────────────────────────────────────────────────────
+    final toSync = Map<String, dynamic>.from(data)..['id'] = id;
+    await SyncService.instance.pushSubject(toSync);
+    // ────────────────────────────────────────────────────────────────
+
+    return id;
   }
 
   Future<List<Map<String, dynamic>>> getAllSubjects() async {
@@ -308,7 +359,15 @@ class DatabaseHelper {
 
   Future<int> updateSubject(int id, Map<String, dynamic> data) async {
     final db = await database;
-    return db.update('subjects', data, where: 'id = ?', whereArgs: [id]);
+    final count =
+        await db.update('subjects', data, where: 'id = ?', whereArgs: [id]);
+
+    // ── SYNC ────────────────────────────────────────────────────────
+    final toSync = Map<String, dynamic>.from(data)..['id'] = id;
+    await SyncService.instance.pushSubject(toSync);
+    // ────────────────────────────────────────────────────────────────
+
+    return count;
   }
 
   Future<int> deleteSubject(int id) async {
@@ -322,7 +381,14 @@ class DatabaseHelper {
 
   Future<int> insertSection(Map<String, dynamic> data) async {
     final db = await database;
-    return db.insert('sections', data);
+    final id = await db.insert('sections', data);
+
+    // ── SYNC ────────────────────────────────────────────────────────
+    final toSync = Map<String, dynamic>.from(data)..['id'] = id;
+    await SyncService.instance.pushSection(toSync);
+    // ────────────────────────────────────────────────────────────────
+
+    return id;
   }
 
   Future<List<Map<String, dynamic>>> getAllSections() async {
@@ -332,7 +398,15 @@ class DatabaseHelper {
 
   Future<int> updateSection(int id, Map<String, dynamic> data) async {
     final db = await database;
-    return db.update('sections', data, where: 'id = ?', whereArgs: [id]);
+    final count =
+        await db.update('sections', data, where: 'id = ?', whereArgs: [id]);
+
+    // ── SYNC ────────────────────────────────────────────────────────
+    final toSync = Map<String, dynamic>.from(data)..['id'] = id;
+    await SyncService.instance.pushSection(toSync);
+    // ────────────────────────────────────────────────────────────────
+
+    return count;
   }
 
   Future<int> deleteSection(int id) async {
@@ -347,11 +421,23 @@ class DatabaseHelper {
   Future<int> assignSubjectToProfessor(
       int professorId, int subjectId) async {
     final db = await database;
-    return db.insert(
+    final id = await db.insert(
       'professor_subjects',
       {'professor_id': professorId, 'subject_id': subjectId},
       conflictAlgorithm: ConflictAlgorithm.ignore,
     );
+
+    // ── SYNC ────────────────────────────────────────────────────────
+    if (id > 0) {
+      await SyncService.instance.pushProfessorSubject({
+        'id': id,
+        'professor_id': professorId,
+        'subject_id': subjectId,
+      });
+    }
+    // ────────────────────────────────────────────────────────────────
+
+    return id;
   }
 
   Future<int> removeSubjectFromProfessor(
@@ -408,7 +494,7 @@ class DatabaseHelper {
     String? room,
   }) async {
     final db = await database;
-    return db.insert(
+    final id = await db.insert(
       'subject_sections',
       {
         'subject_id': subjectId,
@@ -419,6 +505,19 @@ class DatabaseHelper {
       },
       conflictAlgorithm: ConflictAlgorithm.replace,
     );
+
+    // ── SYNC ────────────────────────────────────────────────────────
+    await SyncService.instance.pushSubjectSection({
+      'id': id,
+      'subject_id': subjectId,
+      'section_id': sectionId,
+      'professor_id': professorId,
+      'schedule': schedule,
+      'room': room,
+    });
+    // ────────────────────────────────────────────────────────────────
+
+    return id;
   }
 
   Future<int> removeSectionFromSubject(
@@ -454,25 +553,26 @@ class DatabaseHelper {
   }
 
   Future<List<Map<String, dynamic>>> getSectionsBySubject(
-      int subjectId) async {
-    final db = await database;
-    return db.rawQuery('''
-      SELECT
-        sec.id          AS section_id,
-        sec.section_name,
-        sec.course,
-        sec.year_level,
-        ss.schedule,
-        ss.room,
-        p.id            AS professor_id,
-        p.full_name     AS professor_name
-      FROM subject_sections ss
-      JOIN sections sec   ON ss.section_id  = sec.id
-      LEFT JOIN professors p ON ss.professor_id = p.id
-      WHERE ss.subject_id = ?
-      ORDER BY sec.section_name ASC
-    ''', [subjectId]);
-  }
+    int subjectId) async {
+  final db = await database;
+  return db.rawQuery('''
+    SELECT
+      ss.id           AS subject_section_id,   -- ← THIS WAS MISSING
+      sec.id          AS section_id,
+      sec.section_name,
+      sec.course,
+      sec.year_level,
+      ss.schedule,
+      ss.room,
+      p.id            AS professor_id,
+      p.full_name     AS professor_name
+    FROM subject_sections ss
+    JOIN sections sec   ON ss.section_id  = sec.id
+    LEFT JOIN professors p ON ss.professor_id = p.id
+    WHERE ss.subject_id = ?
+    ORDER BY sec.section_name ASC
+  ''', [subjectId]);
+}
 
   // ═══════════════════════════════════════════════════════════════════
   // STUDENTS
@@ -480,7 +580,14 @@ class DatabaseHelper {
 
   Future<int> insertStudent(Map<String, dynamic> data) async {
     final db = await database;
-    return db.insert('students', data);
+    final id = await db.insert('students', data);
+
+    // ── SYNC ────────────────────────────────────────────────────────
+    final toSync = Map<String, dynamic>.from(data)..['id'] = id;
+    await SyncService.instance.pushStudent(toSync);
+    // ────────────────────────────────────────────────────────────────
+
+    return id;
   }
 
   Future<List<Map<String, dynamic>>> getAllStudents() async {
@@ -513,7 +620,15 @@ class DatabaseHelper {
 
   Future<int> updateStudent(int id, Map<String, dynamic> data) async {
     final db = await database;
-    return db.update('students', data, where: 'id = ?', whereArgs: [id]);
+    final count =
+        await db.update('students', data, where: 'id = ?', whereArgs: [id]);
+
+    // ── SYNC ────────────────────────────────────────────────────────
+    final toSync = Map<String, dynamic>.from(data)..['id'] = id;
+    await SyncService.instance.pushStudent(toSync);
+    // ────────────────────────────────────────────────────────────────
+
+    return count;
   }
 
   Future<int> deleteStudent(int id) async {
@@ -580,7 +695,7 @@ class DatabaseHelper {
     required String timeIn,
   }) async {
     final db = await database;
-    return db.insert(
+    final id = await db.insert(
       'attendance',
       {
         'student_id': studentId,
@@ -589,8 +704,23 @@ class DatabaseHelper {
         'time_in': timeIn,
         'status': 'present',
       },
-      conflictAlgorithm: ConflictAlgorithm.ignore, // safe re-scan guard
+      conflictAlgorithm: ConflictAlgorithm.ignore,
     );
+
+    // ── SYNC ────────────────────────────────────────────────────────
+    if (id > 0) {
+      await SyncService.instance.pushAttendance({
+        'id': id,
+        'student_id': studentId,
+        'subject_section_id': subjectSectionId,
+        'date': date,
+        'time_in': timeIn,
+        'status': 'present',
+      });
+    }
+    // ────────────────────────────────────────────────────────────────
+
+    return id;
   }
 
   /// Records a time-out by updating the existing attendance row for today.
@@ -611,6 +741,28 @@ class DatabaseHelper {
       where: 'student_id = ? AND subject_section_id = ? AND date = ?',
       whereArgs: [studentId, subjectSectionId, date],
     );
+
+    // ── SYNC ────────────────────────────────────────────────────────
+    if (count > 0) {
+      final row = await getAttendanceForToday(
+        studentId: studentId,
+        subjectSectionId: subjectSectionId,
+        date: date,
+      );
+      if (row != null) {
+        await SyncService.instance.pushAttendance({
+          'id': row['id'],
+          'student_id': studentId,
+          'subject_section_id': subjectSectionId,
+          'date': date,
+          'time_in': row['time_in'],
+          'time_out': timeOut,
+          'status': 'completed',
+        });
+      }
+    }
+    // ────────────────────────────────────────────────────────────────
+
     return count > 0;
   }
 
@@ -657,8 +809,8 @@ class DatabaseHelper {
     return row != null && row['time_out'] == null;
   }
 
-  /// Fetch all attendance rows for a subject-section, each row is one student
-  /// for one day. Now includes time_out and student_id for the scanner.
+  /// Fetch all attendance rows for a subject-section, each row is one
+  /// student for one day. Includes time_out and student_id for the scanner.
   Future<List<Map<String, dynamic>>> getAttendanceBySubjectSection(
       int subjectSectionId) async {
     final db = await database;

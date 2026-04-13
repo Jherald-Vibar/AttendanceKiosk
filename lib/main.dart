@@ -7,10 +7,40 @@ import 'package:camera/camera.dart';
 import 'package:google_mlkit_face_detection/google_mlkit_face_detection.dart';
 import 'package:Sentry/database/database_helper.dart';
 import 'package:Sentry/services/face_recognition_service.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
+import 'package:Sentry/services/sync_service.dart';
+import 'package:shared_preferences/shared_preferences.dart'; // ← ADD THIS
 import 'dart:io';
 import 'dart:typed_data';
 
-void main() {
+void main() async {
+  WidgetsFlutterBinding.ensureInitialized();
+
+  await Supabase.initialize(
+    url: 'https://anzabsyngsmxgvnnbonn.supabase.co',
+    anonKey: 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImFuemFic3luZ3NteGd2bm5ib25uIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzYwNDI5MjUsImV4cCI6MjA5MTYxODkyNX0.ngE64HEMTcndgOuRBkmjr0KEnQtF_gxxfvAJj2NL1lU',
+  );
+
+  await SyncService.instance.init();
+
+  // ── Seed local SQLite from Supabase on first launch ──────────────
+  try {
+    final prefs = await SharedPreferences.getInstance();
+    final alreadySeeded = prefs.getBool('seeded_from_supabase') ?? false;
+
+    if (!alreadySeeded) {
+      debugPrint('🌱 First launch — seeding from Supabase...');
+      await DatabaseHelper.instance.seedFromSupabase();
+      await prefs.setBool('seeded_from_supabase', true);
+      debugPrint('✅ Seed complete.');
+    } else {
+      debugPrint('✅ Already seeded — skipping.');
+    }
+  } catch (e) {
+    debugPrint('❌ Seed error: $e');
+  }
+  // ─────────────────────────────────────────────────────────────────
+
   runApp(const MyApp());
 }
 
@@ -181,7 +211,7 @@ class _AdminScanDialogState extends State<_AdminScanDialog> {
           embedding: FaceRecognitionService.decode(row['face_embedding']),
         ));
       } catch (e) {
-        print('❌ Error decoding embedding: $e');
+        debugPrint('❌ Error decoding embedding: $e');
       }
     }
     if (mounted) {
@@ -210,7 +240,7 @@ class _AdminScanDialogState extends State<_AdminScanDialog> {
         _startStream();
       }
     } catch (e) {
-      print('❌ Camera init error: $e');
+      debugPrint('❌ Camera init error: $e');
     }
   }
 
@@ -325,7 +355,6 @@ class _AdminScanDialogState extends State<_AdminScanDialog> {
         return;
       }
 
-      // ── Admin verified → go to Kiosk Dashboard ───────────────────
       if (!mounted) return;
       final navigator = Navigator.of(context);
 
@@ -334,18 +363,16 @@ class _AdminScanDialogState extends State<_AdminScanDialog> {
         _cameraController = null;
       } catch (_) {}
 
-      navigator.pop(); // close dialog
+      navigator.pop();
       await Future.delayed(const Duration(milliseconds: 300));
 
-      // ✅ Push KioskDashboard and clear entire back stack
-      //    so user cannot go back to HomePage from kiosk
       navigator.pushAndRemoveUntil(
         MaterialPageRoute(builder: (_) => const KioskDashboard()),
         (route) => false,
       );
 
     } catch (e) {
-      print('❌ Scan error: $e');
+      debugPrint('❌ Scan error: $e');
       if (mounted) _showError('Error scanning. Please try again.');
       _restartStream();
     } finally {

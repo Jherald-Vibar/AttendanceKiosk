@@ -109,7 +109,7 @@ class _FaceRegistrationScreenState extends State<FaceRegistrationScreen>
     });
   }
 
-  // ── 4-shot capture with embedding averaging ───────────────────────
+  // ── 4-shot capture — uses largest face instead of rejecting ───────
   Future<void> _captureFace() async {
     if (_isProcessing || !_faceDetected) return;
     setState(() {
@@ -132,25 +132,24 @@ class _FaceRegistrationScreenState extends State<FaceRegistrationScreen>
         // Take photo
         final xFile = await _cameraController!.takePicture();
 
-        // Detect face
+        // Detect faces
         final inputImage = InputImage.fromFile(File(xFile.path));
-        final faces =
+        final allFaces =
             await FaceRecognitionService.instance.detectFaces(inputImage);
 
-        if (faces.isEmpty) {
+        if (allFaces.isEmpty) {
           _showError('Shot $shot: No face detected. Try again.');
           _resetCapture();
           return;
         }
-        if (faces.length > 1) {
-          _showError('Multiple faces detected. Only one person please.');
-          _resetCapture();
-          return;
-        }
 
-        // Generate embedding for this shot
+        // ── FIX: pick the largest face instead of rejecting ──────────
+        final primaryFace = allFaces.reduce((a, b) =>
+            a.boundingBox.width > b.boundingBox.width ? a : b);
+
+        // Generate embedding for this shot using only the primary face
         final embedding = await FaceRecognitionService.instance
-            .generateEmbeddingFromFile(xFile.path, faces.first);
+            .generateEmbeddingFromFile(xFile.path, primaryFace);
 
         if (embedding == null) {
           _showError('Shot $shot failed. Try better lighting.');

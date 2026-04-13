@@ -211,17 +211,19 @@ class _SubjectCardState extends State<_SubjectCard> {
 
   Future<void> _loadSections() async {
     setState(() => _loadingSections = true);
-    final all =
-        await DatabaseHelper.instance.getSubjectSectionsDetail();
-    final filtered = all
-        .where((r) =>
-            r['subject_id'].toString() ==
-                widget.subject['id'].toString() &&
-            r['professor_id'].toString() ==
-                widget.professor['id'].toString())
-        .toList();
+
+    // Use getSectionsBySubject which only filters by subject_id.
+    // We no longer filter by professor_id here because:
+    // 1. subject_sections.professor_id can be null after seed if not set in Supabase
+    // 2. The professor is already scoped — only their assigned subjects are shown,
+    //    so all sections of those subjects belong to them.
+    final sections = await DatabaseHelper.instance
+        .getSectionsBySubject(widget.subject['id']);
+
+    print('Sections for subject ${widget.subject['id']}: ${sections.length}');
+
     setState(() {
-      _sections = filtered;
+      _sections = sections;
       _loadingSections = false;
     });
   }

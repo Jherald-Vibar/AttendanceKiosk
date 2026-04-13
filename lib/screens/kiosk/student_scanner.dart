@@ -6,6 +6,7 @@ import 'package:google_mlkit_face_detection/google_mlkit_face_detection.dart';
 import 'package:intl/intl.dart';
 import 'dart:io';
 import 'dart:typed_data';
+import 'dart:async';
 import 'package:Sentry/database/database_helper.dart';
 import 'package:Sentry/services/face_recognition_service.dart';
 import 'package:Sentry/screens/kiosk/kiosk_dashboard.dart';
@@ -44,6 +45,18 @@ class _StudentScannerState extends State<StudentScanner> {
   bool _isProcessing = false;
   List<EnrolledFace> _enrolledFaces = [];
   bool _dbLoaded = false;
+
+  // ── Auto-scan state ───────────────────────────────────────────────
+  Timer? _autoScanTimer;
+  bool _autoScanReady = true;
+  static const Duration _autoScanDelay    = Duration(seconds: 2);
+  static const Duration _autoScanCooldown = Duration(seconds: 4);
+  DateTime? _faceFirstSeenAt;
+
+  // ── No-face auto-end (Time Out mode only) ─────────────────────────
+  Timer? _noFaceEndTimer;
+  int _noFaceCountdown = 0;
+  static const int _noFaceTimeoutSecs = 15;
 
   final FaceDetector _faceDetector = FaceDetector(
     options: FaceDetectorOptions(
@@ -103,7 +116,7 @@ class _StudentScannerState extends State<StudentScanner> {
     }
   }
 
-  // ── Stream helpers ────────────────────────────────────────────────────
+  // ── Stream helpers ────────────────────────────────────────────────
   void _startStream() {
     if (_cameraController == null ||
         !_cameraController!.value.isInitialized ||
@@ -125,10 +138,86 @@ class _StudentScannerState extends State<StudentScanner> {
       final inp = _convertCameraImage(img);
       if (inp != null) {
         final faces = await _faceDetector.processImage(inp);
-        if (mounted) setState(() => _faceDetected = faces.isNotEmpty);
+        final detected = faces.isNotEmpty;
+
+        if (mounted) setState(() => _faceDetected = detected);
+
+        if (detected) {
+          // Face appeared — cancel any no-face end timer
+          _cancelNoFaceTimer();
+          _faceFirstSeenAt ??= DateTime.now();
+
+          final heldLongEnough = DateTime.now()
+              .difference(_faceFirstSeenAt!) >= _autoScanDelay;
+
+          if (heldLongEnough && _autoScanReady && !_isProcessing && _dbLoaded) {
+            _triggerAutoScan();
+          }
+        } else {
+          // No face — reset hold timer
+          _faceFirstSeenAt = null;
+
+          // Start no-face countdown only in Time Out mode
+          if (!_isTimeIn && !_isProcessing) {
+            _startNoFaceTimer();
+          }
+        }
       }
     } catch (_) {}
     _isDetecting = false;
+  }
+
+  // ── No-face auto-end timer ────────────────────────────────────────
+
+  /// Starts the countdown only if not already running.
+  void _startNoFaceTimer() {
+    if (_noFaceEndTimer != null) return; // already ticking
+    if (mounted) setState(() => _noFaceCountdown = _noFaceTimeoutSecs);
+
+    // Tick every second to update the countdown UI
+    _noFaceEndTimer = Timer.periodic(const Duration(seconds: 1), (t) {
+      if (!mounted) { t.cancel(); return; }
+      final remaining = _noFaceCountdown - 1;
+      if (remaining <= 0) {
+        t.cancel();
+        _noFaceEndTimer = null;
+        _autoEndClass();
+      } else {
+        setState(() => _noFaceCountdown = remaining);
+      }
+    });
+  }
+
+  /// Cancels the countdown (called when a face is detected again).
+  void _cancelNoFaceTimer() {
+    if (_noFaceEndTimer == null) return;
+    _noFaceEndTimer?.cancel();
+    _noFaceEndTimer = null;
+    if (mounted) setState(() => _noFaceCountdown = 0);
+  }
+
+  /// Fires when countdown reaches zero — navigates to KioskDashboard.
+  void _autoEndClass() {
+    if (!mounted) return;
+    Navigator.of(context).pushAndRemoveUntil(
+      MaterialPageRoute(builder: (_) => const KioskDashboard()),
+      (route) => false,
+    );
+  }
+
+  // ── Auto-scan helpers ─────────────────────────────────────────────
+  void _triggerAutoScan() {
+    if (!_autoScanReady || _isProcessing) return;
+    setState(() => _autoScanReady = false);
+    _captureAndProcessFace();
+  }
+
+  void _startCooldown() {
+    _faceFirstSeenAt = null;
+    _autoScanTimer?.cancel();
+    _autoScanTimer = Timer(_autoScanCooldown, () {
+      if (mounted) setState(() => _autoScanReady = true);
+    });
   }
 
   InputImage? _convertCameraImage(CameraImage img) {
@@ -154,11 +243,11 @@ class _StudentScannerState extends State<StudentScanner> {
     } catch (_) { return null; }
   }
 
-  // ── Student face scan ─────────────────────────────────────────────────
+  // ── Student face scan ─────────────────────────────────────────────
   Future<void> _captureAndProcessFace() async {
-    if (!_faceDetected) { _showMessage('No face detected.'); return; }
-    if (!_dbLoaded)     { _showMessage('Still loading. Please wait.'); return; }
-    if (_enrolledFaces.isEmpty) { _showMessage('No enrolled students.'); return; }
+    if (!_faceDetected) { _startCooldown(); return; }
+    if (!_dbLoaded)     { _startCooldown(); return; }
+    if (_enrolledFaces.isEmpty) { _showMessage('No enrolled students.'); _startCooldown(); return; }
 
     setState(() => _isProcessing = true);
     try {
@@ -166,15 +255,18 @@ class _StudentScannerState extends State<StudentScanner> {
       final xFile = await _cameraController!.takePicture();
       final inputImage = InputImage.fromFile(File(xFile.path));
       final faces = await FaceRecognitionService.instance.detectFaces(inputImage);
-      if (faces.isEmpty) { _showMessage('No face on capture.'); _restartStream(); return; }
+      if (faces.isEmpty) { _showMessage('No face on capture.'); _restartStream(); _startCooldown(); return; }
+
+      final primaryFace = faces.reduce((a, b) =>
+          a.boundingBox.width > b.boundingBox.width ? a : b);
 
       final embedding = await FaceRecognitionService.instance
-          .generateEmbeddingFromFile(xFile.path, faces.first);
-      if (embedding == null) { _showMessage('Could not read face.'); _restartStream(); return; }
+          .generateEmbeddingFromFile(xFile.path, primaryFace);
+      if (embedding == null) { _showMessage('Could not read face.'); _restartStream(); _startCooldown(); return; }
 
       final match = FaceRecognitionService.instance
           .findBestMatch(embedding, _enrolledFaces);
-      if (match == null) { _showUnknownDialog(); _restartStream(); return; }
+      if (match == null) { _showUnknownDialog(); _restartStream(); _startCooldown(); return; }
 
       final today = DateFormat('yyyy-MM-dd').format(DateTime.now());
       final now   = DateFormat('HH:mm:ss').format(DateTime.now());
@@ -230,24 +322,27 @@ class _StudentScannerState extends State<StudentScanner> {
         result: attendanceResult,
       );
       _restartStream();
+      _startCooldown();
     } catch (e) {
       debugPrint('Scan error: $e');
       _showMessage('Error during scan.');
       _restartStream();
+      _startCooldown();
     } finally {
       if (mounted) setState(() => _isProcessing = false);
     }
   }
 
-  // ── Professor verify sheet ────────────────────────────────────────────
+  // ── Professor verify sheet ────────────────────────────────────────
   Future<void> _showProfessorVerifySheet({required bool isEndClass}) async {
-    // 1️⃣ Stop student scanner stream so verify sheet can use the camera
+    // Pause no-face timer while professor sheet is open
+    _cancelNoFaceTimer();
     await _stopStream();
-    if (mounted) setState(() => _faceDetected = false);
+    _autoScanTimer?.cancel();
+    if (mounted) setState(() { _faceDetected = false; _autoScanReady = false; });
 
     if (!mounted) return;
 
-    // 2️⃣ Open sheet and WAIT for it to close
     await showModalBottomSheet(
       context: context,
       isScrollControlled: true,
@@ -260,13 +355,11 @@ class _StudentScannerState extends State<StudentScanner> {
         onVerified: () {
           Navigator.pop(ctx);
           if (isEndClass) {
-            // Navigate away — no need to reinit camera
             Navigator.of(context).pushAndRemoveUntil(
               MaterialPageRoute(builder: (_) => const KioskDashboard()),
               (route) => false,
             );
           } else {
-            // Time Out mode — setState first, reinit happens below after sheet closes
             if (mounted) setState(() => _isTimeIn = false);
             ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
               content: Text('Time Out mode enabled.'),
@@ -275,40 +368,32 @@ class _StudentScannerState extends State<StudentScanner> {
             ));
           }
         },
-        // FIX: onCancelled no longer calls Navigator.pop itself —
-        // the sheet disposes its own camera first, then pops.
         onCancelled: () => Navigator.pop(ctx),
       ),
     );
 
-    // 3️⃣ Sheet is fully closed — wait for the sheet's camera to fully release
-    //    before reinitializing our own camera controller.
-    //    Skip if End Class navigated away (widget no longer mounted).
     if (!mounted) return;
 
     await Future.delayed(const Duration(milliseconds: 600));
     if (!mounted) return;
 
     await _reinitializeCameraAfterSheet();
+    if (mounted) setState(() => _autoScanReady = true);
+    // If we're now in Time Out mode, the no-face timer starts naturally
+    // via _processCameraImage when no face is seen.
   }
 
-  /// Fully tears down and rebuilds the camera controller.
-  /// Called after the professor verify sheet closes (verified OR cancelled)
-  /// so we always get a clean camera state.
   Future<void> _reinitializeCameraAfterSheet() async {
     try {
-      // Dispose old controller
       final old = _cameraController;
       _cameraController = null;
       _isStreaming = false;
       if (mounted) setState(() { _isCameraInitialized = false; _faceDetected = false; });
       try { await old?.dispose(); } catch (_) {}
 
-      // Small buffer after dispose
       await Future.delayed(const Duration(milliseconds: 300));
       if (!mounted) return;
 
-      // Reinitialize fresh
       final cameras = await availableCameras();
       final frontCamera = cameras.firstWhere(
         (c) => c.lensDirection == CameraLensDirection.front,
@@ -335,7 +420,7 @@ class _StudentScannerState extends State<StudentScanner> {
     });
   }
 
-  // ── Dialogs & messages ────────────────────────────────────────────────
+  // ── Dialogs & messages ────────────────────────────────────────────
   void _showMessage(String msg) {
     if (!mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(SnackBar(
@@ -423,12 +508,10 @@ class _StudentScannerState extends State<StudentScanner> {
                     fontSize: 14)),
             const SizedBox(height: 4),
             Text(DateFormat('hh:mm:ss a').format(DateTime.now()),
-                style: const TextStyle(
-                    color: Color(0xFF8B9DC3), fontSize: 13)),
+                style: const TextStyle(color: Color(0xFF8B9DC3), fontSize: 13)),
             const SizedBox(height: 2),
             Text('Confidence: ${confidence.toStringAsFixed(1)}%',
-                style: const TextStyle(
-                    color: Color(0xFF8B9DC3), fontSize: 12)),
+                style: const TextStyle(color: Color(0xFF8B9DC3), fontSize: 12)),
             const SizedBox(height: 20),
             SizedBox(
               width: double.infinity, height: 46,
@@ -442,8 +525,7 @@ class _StudentScannerState extends State<StudentScanner> {
                       borderRadius: BorderRadius.circular(12)),
                 ),
                 child: const Text('OK',
-                    style: TextStyle(
-                        fontWeight: FontWeight.w800, fontSize: 16)),
+                    style: TextStyle(fontWeight: FontWeight.w800, fontSize: 16)),
               ),
             ),
           ]),
@@ -506,18 +588,31 @@ class _StudentScannerState extends State<StudentScanner> {
 
   @override
   void dispose() {
+    _autoScanTimer?.cancel();
+    _noFaceEndTimer?.cancel();
     _stopStream();
     _cameraController?.dispose();
     _faceDetector.close();
     super.dispose();
   }
 
-  // ── Build ─────────────────────────────────────────────────────────────
+  // ── Build ─────────────────────────────────────────────────────────
   @override
   Widget build(BuildContext context) {
     final screenHeight = MediaQuery.of(context).size.height;
     final frameHeight = screenHeight * 0.30;
     final frameWidth = frameHeight * 0.875;
+
+    final bool isWarmingUp = _faceDetected &&
+        !_isProcessing &&
+        _autoScanReady &&
+        _faceFirstSeenAt != null;
+
+    // Show countdown only in Time Out mode while no face is visible
+    final bool showNoFaceCountdown = !_isTimeIn &&
+        !_isProcessing &&
+        !_faceDetected &&
+        _noFaceCountdown > 0;
 
     return PopScope(
       canPop: false,
@@ -525,14 +620,12 @@ class _StudentScannerState extends State<StudentScanner> {
         backgroundColor: Colors.black,
         body: Stack(
           children: [
-            // Camera background
             if (_isCameraInitialized && _cameraController != null)
               SizedBox.expand(child: CameraPreview(_cameraController!))
             else
               const Center(
                   child: CircularProgressIndicator(color: Colors.white)),
 
-            // Processing overlay
             if (_isProcessing)
               Container(
                 color: Colors.black54,
@@ -557,7 +650,6 @@ class _StudentScannerState extends State<StudentScanner> {
                   Padding(
                     padding: const EdgeInsets.fromLTRB(20, 16, 20, 0),
                     child: Column(mainAxisSize: MainAxisSize.min, children: [
-                      // SENTRY logo
                       Container(
                         padding: const EdgeInsets.symmetric(
                             horizontal: 24, vertical: 8),
@@ -573,7 +665,6 @@ class _StudentScannerState extends State<StudentScanner> {
                       ),
                       const SizedBox(height: 16),
 
-                      // Progress dots
                       Row(
                         mainAxisAlignment: MainAxisAlignment.center,
                         children: [
@@ -585,7 +676,6 @@ class _StudentScannerState extends State<StudentScanner> {
                       ),
                       const SizedBox(height: 12),
 
-                      // Section name
                       Text(widget.sectionName,
                           style: const TextStyle(
                               color: Colors.white,
@@ -593,7 +683,6 @@ class _StudentScannerState extends State<StudentScanner> {
                               fontWeight: FontWeight.bold)),
                       const SizedBox(height: 4),
 
-                      // Enrolled count badge
                       if (_dbLoaded)
                         Container(
                           padding: const EdgeInsets.symmetric(
@@ -625,11 +714,10 @@ class _StudentScannerState extends State<StudentScanner> {
                         ),
                       const SizedBox(height: 10),
 
-                      // ── Mode row ─────────────────────────────────
+                      // ── Mode row ──────────────────────────────────
                       Row(
                         mainAxisAlignment: MainAxisAlignment.center,
                         children: [
-                          // Current mode badge
                           Container(
                             padding: const EdgeInsets.symmetric(
                                 horizontal: 14, vertical: 7),
@@ -655,9 +743,7 @@ class _StudentScannerState extends State<StudentScanner> {
                               Text(
                                 _isTimeIn ? 'Time In' : 'Time Out',
                                 style: TextStyle(
-                                  color: _isTimeIn
-                                      ? Colors.green
-                                      : Colors.orange,
+                                  color: _isTimeIn ? Colors.green : Colors.orange,
                                   fontSize: 13,
                                   fontWeight: FontWeight.w600,
                                 ),
@@ -665,7 +751,6 @@ class _StudentScannerState extends State<StudentScanner> {
                             ]),
                           ),
 
-                          // ✅ Time Out switch — professor face required
                           if (_isTimeIn) ...[
                             const SizedBox(width: 8),
                             GestureDetector(
@@ -701,7 +786,7 @@ class _StudentScannerState extends State<StudentScanner> {
                     ]),
                   ),
 
-                  // ── Face frame ───────────────────────────────────
+                  // ── Face frame ─────────────────────────────────
                   Expanded(
                     child: Center(
                       child: Column(mainAxisSize: MainAxisSize.min, children: [
@@ -709,9 +794,15 @@ class _StudentScannerState extends State<StudentScanner> {
                           width: frameWidth, height: frameHeight,
                           decoration: BoxDecoration(
                             border: Border.all(
-                                color: _faceDetected
-                                    ? Colors.green
-                                    : Colors.white,
+                                color: _isProcessing
+                                    ? Colors.white
+                                    : showNoFaceCountdown
+                                        ? Colors.redAccent
+                                        : !_autoScanReady
+                                            ? Colors.blue
+                                            : _faceDetected
+                                                ? Colors.green
+                                                : Colors.white,
                                 width: 3),
                             borderRadius: BorderRadius.circular(16),
                           ),
@@ -720,111 +811,181 @@ class _StudentScannerState extends State<StudentScanner> {
                                 top: 0, left: 0,
                                 child: _buildCornerBracket(
                                     topLeft: true,
-                                    color: _faceDetected
-                                        ? Colors.green
-                                        : Colors.white)),
+                                    color: showNoFaceCountdown
+                                        ? Colors.redAccent
+                                        : _faceDetected
+                                            ? Colors.green
+                                            : Colors.white)),
                             Positioned(
                                 top: 0, right: 0,
                                 child: _buildCornerBracket(
                                     topRight: true,
-                                    color: _faceDetected
-                                        ? Colors.green
-                                        : Colors.white)),
+                                    color: showNoFaceCountdown
+                                        ? Colors.redAccent
+                                        : _faceDetected
+                                            ? Colors.green
+                                            : Colors.white)),
                             Positioned(
                                 bottom: 0, left: 0,
                                 child: _buildCornerBracket(
                                     bottomLeft: true,
-                                    color: _faceDetected
-                                        ? Colors.green
-                                        : Colors.white)),
+                                    color: showNoFaceCountdown
+                                        ? Colors.redAccent
+                                        : _faceDetected
+                                            ? Colors.green
+                                            : Colors.white)),
                             Positioned(
                                 bottom: 0, right: 0,
                                 child: _buildCornerBracket(
                                     bottomRight: true,
-                                    color: _faceDetected
-                                        ? Colors.green
-                                        : Colors.white)),
-                            if (_faceDetected)
+                                    color: showNoFaceCountdown
+                                        ? Colors.redAccent
+                                        : _faceDetected
+                                            ? Colors.green
+                                            : Colors.white)),
+
+                            // No-face countdown overlay (Time Out mode)
+                            if (showNoFaceCountdown)
+                              Center(
+                                child: Column(
+                                  mainAxisSize: MainAxisSize.min,
+                                  children: [
+                                    Text(
+                                      '$_noFaceCountdown',
+                                      style: const TextStyle(
+                                        color: Colors.redAccent,
+                                        fontSize: 48,
+                                        fontWeight: FontWeight.w900,
+                                      ),
+                                    ),
+                                    const Text(
+                                      'Ending class...',
+                                      style: TextStyle(
+                                          color: Colors.redAccent,
+                                          fontSize: 12,
+                                          fontWeight: FontWeight.w600),
+                                    ),
+                                  ],
+                                ),
+                              ),
+
+                            // Warming up indicator
+                            if (isWarmingUp && !showNoFaceCountdown)
                               const Center(
-                                child: Icon(Icons.check_circle,
-                                    color: Colors.green, size: 48),
+                                child: Column(
+                                  mainAxisSize: MainAxisSize.min,
+                                  children: [
+                                    Icon(Icons.face_unlock_outlined,
+                                        color: Colors.green, size: 36),
+                                    SizedBox(height: 6),
+                                    Text('Hold still...',
+                                        style: TextStyle(
+                                            color: Colors.green,
+                                            fontSize: 13,
+                                            fontWeight: FontWeight.w600)),
+                                  ],
+                                ),
+                              ),
+
+                            // Cooldown indicator
+                            if (!_autoScanReady && !_isProcessing && !showNoFaceCountdown)
+                              Center(
+                                child: Container(
+                                  padding: const EdgeInsets.symmetric(
+                                      horizontal: 12, vertical: 6),
+                                  decoration: BoxDecoration(
+                                    color: Colors.black54,
+                                    borderRadius: BorderRadius.circular(8),
+                                  ),
+                                  child: const Text('Please wait...',
+                                      style: TextStyle(
+                                          color: Colors.blue,
+                                          fontSize: 13,
+                                          fontWeight: FontWeight.w600)),
+                                ),
                               ),
                           ]),
                         ),
                         const SizedBox(height: 12),
+
+                        // Status text
                         Text(
                           _isProcessing
                               ? 'Processing...'
-                              : _faceDetected
-                                  ? 'Face detected! Ready to scan.'
-                                  : 'Find a good lighting spot',
+                              : showNoFaceCountdown
+                                  ? 'No face detected — class ending in $_noFaceCountdown s'
+                                  : !_autoScanReady
+                                      ? 'Next scan ready soon...'
+                                      : _faceDetected
+                                          ? 'Face detected — scanning automatically'
+                                          : 'Find a good lighting spot',
                           style: TextStyle(
-                            color: _faceDetected
-                                ? Colors.green
-                                : Colors.white.withOpacity(0.8),
+                            color: _isProcessing
+                                ? Colors.white
+                                : showNoFaceCountdown
+                                    ? Colors.redAccent
+                                    : !_autoScanReady
+                                        ? Colors.blue
+                                        : _faceDetected
+                                            ? Colors.green
+                                            : Colors.white.withOpacity(0.8),
                             fontSize: 14,
-                            fontWeight: _faceDetected
+                            fontWeight: (showNoFaceCountdown ||
+                                    _faceDetected ||
+                                    !_autoScanReady)
                                 ? FontWeight.bold
                                 : FontWeight.normal,
                           ),
                         ),
+
+                        const SizedBox(height: 6),
+
+                        if (!_isProcessing && !showNoFaceCountdown)
+                          Text(
+                            'Auto-scans after ${_autoScanDelay.inSeconds}s • ${_autoScanCooldown.inSeconds}s cooldown',
+                            style: TextStyle(
+                              color: Colors.white.withOpacity(0.35),
+                              fontSize: 11,
+                            ),
+                          ),
+
+                        // Hint shown in Time Out mode while waiting
+                        if (!_isProcessing && !_isTimeIn && !_faceDetected && !showNoFaceCountdown)
+                          Padding(
+                            padding: const EdgeInsets.only(top: 4),
+                            child: Text(
+                              'Class auto-ends after ${_noFaceTimeoutSecs}s with no face',
+                              style: TextStyle(
+                                color: Colors.orange.withOpacity(0.6),
+                                fontSize: 11,
+                              ),
+                            ),
+                          ),
                       ]),
                     ),
                   ),
 
-                  // ── Bottom buttons ───────────────────────────────
+                  // ── Bottom — End Class only ───────────────────
                   Padding(
                     padding: const EdgeInsets.fromLTRB(20, 0, 20, 20),
-                    child: Column(mainAxisSize: MainAxisSize.min, children: [
-                      // Scan button
-                      SizedBox(
-                        width: double.infinity, height: 50,
-                        child: ElevatedButton(
-                          onPressed:
-                              (_isCameraInitialized && !_isProcessing)
-                                  ? _captureAndProcessFace
-                                  : null,
-                          style: ElevatedButton.styleFrom(
-                            backgroundColor:
-                                _faceDetected ? Colors.green : Colors.black,
-                            foregroundColor: Colors.white,
-                            shape: RoundedRectangleBorder(
-                              borderRadius: BorderRadius.circular(8),
-                              side: BorderSide(
-                                  color: _faceDetected
-                                      ? Colors.green
-                                      : Colors.white,
-                                  width: 1),
-                            ),
-                            disabledBackgroundColor: Colors.grey[800],
-                          ),
-                          child: const Text('Scan',
-                              style: TextStyle(
-                                  fontSize: 16, fontWeight: FontWeight.w500)),
+                    child: SizedBox(
+                      width: double.infinity, height: 50,
+                      child: ElevatedButton.icon(
+                        onPressed: () async =>
+                            await _showProfessorVerifySheet(isEndClass: true),
+                        icon: const Icon(Icons.stop_circle_rounded, size: 18),
+                        label: const Text('End Class',
+                            style: TextStyle(
+                                fontSize: 15, fontWeight: FontWeight.w600)),
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: Colors.redAccent,
+                          foregroundColor: Colors.white,
+                          shape: RoundedRectangleBorder(
+                              borderRadius: BorderRadius.circular(8)),
+                          elevation: 0,
                         ),
                       ),
-                      const SizedBox(height: 12),
-
-                      // ✅ End Class button — professor face required
-                      SizedBox(
-                        width: double.infinity, height: 50,
-                        child: ElevatedButton.icon(
-                          onPressed: () async =>
-                              await _showProfessorVerifySheet(isEndClass: true),
-                          icon: const Icon(Icons.stop_circle_rounded, size: 18),
-                          label: const Text('End Class',
-                              style: TextStyle(
-                                  fontSize: 15, fontWeight: FontWeight.w600)),
-                          style: ElevatedButton.styleFrom(
-                            backgroundColor: Colors.redAccent,
-                            foregroundColor: Colors.white,
-                            shape: RoundedRectangleBorder(
-                                borderRadius: BorderRadius.circular(8)),
-                            elevation: 0,
-                          ),
-                        ),
-                      ),
-                    ]),
+                    ),
                   ),
                 ],
               ),
@@ -878,7 +1039,7 @@ class _StudentScannerState extends State<StudentScanner> {
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
-// Professor Verify Bottom Sheet
+// Professor Verify Bottom Sheet  (unchanged)
 // ══════════════════════════════════════════════════════════════════════════════
 
 class _ProfessorVerifySheet extends StatefulWidget {
@@ -1003,7 +1164,6 @@ class _ProfessorVerifySheetState extends State<_ProfessorVerifySheet> {
 
     setState(() => _isProcessing = true);
     try {
-      // Stop stream before taking picture
       if (_isStreaming) {
         try { await _cam?.stopImageStream(); } catch (_) {}
         _isStreaming = false;
@@ -1035,9 +1195,6 @@ class _ProfessorVerifySheetState extends State<_ProfessorVerifySheet> {
         return;
       }
 
-      // ✅ Verified — stop stream only (dispose() will be called by Flutter
-      //    when the sheet is popped, and _reinitializeCameraAfterSheet handles
-      //    rebuilding the student scanner camera afterward)
       if (_isStreaming) {
         try { await _cam?.stopImageStream(); } catch (_) {}
         _isStreaming = false;
@@ -1052,16 +1209,12 @@ class _ProfessorVerifySheetState extends State<_ProfessorVerifySheet> {
     }
   }
 
-  /// FIX: Properly dispose camera THEN call onCancelled.
   Future<void> _handleCancel() async {
-    // Stop stream first
     if (_isStreaming) {
       try { await _cam?.stopImageStream(); } catch (_) {}
       _isStreaming = false;
     }
-    // Dispose camera so student scanner can reclaim it
     try { await _cam?.dispose(); _cam = null; } catch (_) {}
-    // Small buffer to let the OS release the camera resource
     await Future.delayed(const Duration(milliseconds: 200));
     widget.onCancelled();
   }
@@ -1100,7 +1253,6 @@ class _ProfessorVerifySheetState extends State<_ProfessorVerifySheet> {
         borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
       ),
       child: Column(children: [
-        // Handle bar
         Container(
           margin: const EdgeInsets.only(top: 12),
           width: 40, height: 4,
@@ -1108,8 +1260,6 @@ class _ProfessorVerifySheetState extends State<_ProfessorVerifySheet> {
               color: const Color(0xFF3D4F6B),
               borderRadius: BorderRadius.circular(2)),
         ),
-
-        // Header
         Padding(
           padding: const EdgeInsets.fromLTRB(24, 20, 24, 0),
           child: Row(children: [
@@ -1136,7 +1286,6 @@ class _ProfessorVerifySheetState extends State<_ProfessorVerifySheet> {
                             color: Color(0xFF8B9DC3), fontSize: 12)),
                   ]),
             ),
-            // FIX: X button now calls _handleCancel instead of onCancelled directly
             GestureDetector(
               onTap: _handleCancel,
               child: const Icon(Icons.close_rounded,
@@ -1144,10 +1293,7 @@ class _ProfessorVerifySheetState extends State<_ProfessorVerifySheet> {
             ),
           ]),
         ),
-
         const SizedBox(height: 16),
-
-        // Camera preview
         Expanded(
           child: Padding(
             padding: const EdgeInsets.symmetric(horizontal: 24),
@@ -1184,8 +1330,6 @@ class _ProfessorVerifySheetState extends State<_ProfessorVerifySheet> {
             ),
           ),
         ),
-
-        // Status text
         Padding(
           padding: const EdgeInsets.symmetric(vertical: 12),
           child: Text(
@@ -1193,23 +1337,17 @@ class _ProfessorVerifySheetState extends State<_ProfessorVerifySheet> {
                 ? 'Face detected! Tap Verify.'
                 : "Position professor's face in frame",
             style: TextStyle(
-              color: _faceDetected
-                  ? Colors.green
-                  : const Color(0xFF8B9DC3),
+              color: _faceDetected ? Colors.green : const Color(0xFF8B9DC3),
               fontSize: 13,
-              fontWeight:
-                  _faceDetected ? FontWeight.w600 : FontWeight.normal,
+              fontWeight: _faceDetected ? FontWeight.w600 : FontWeight.normal,
             ),
           ),
         ),
-
-        // Buttons
         Padding(
           padding: const EdgeInsets.fromLTRB(24, 0, 24, 24),
           child: Row(children: [
             Expanded(
               child: OutlinedButton(
-                // FIX: Cancel button also uses _handleCancel
                 onPressed: _handleCancel,
                 style: OutlinedButton.styleFrom(
                   foregroundColor: const Color(0xFF8B9DC3),
