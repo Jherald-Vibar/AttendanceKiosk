@@ -56,7 +56,7 @@ class _StudentScannerState extends State<StudentScanner> {
   // ── No-face auto-end (Time Out mode only) ─────────────────────────
   Timer? _noFaceEndTimer;
   int _noFaceCountdown = 0;
-  static const int _noFaceTimeoutSecs = 15;
+  static const int _noFaceTimeoutSecs = 60;
 
   final FaceDetector _faceDetector = FaceDetector(
     options: FaceDetectorOptions(

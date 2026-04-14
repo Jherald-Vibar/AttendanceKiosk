@@ -3,6 +3,7 @@
 import 'dart:convert';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:connectivity_plus/connectivity_plus.dart';
+import 'package:Sentry/database/database_helper.dart';
 
 class SyncService {
   static final SyncService instance = SyncService._();
@@ -14,9 +15,62 @@ class SyncService {
   Future<void> init() async {
     final current = await Connectivity().checkConnectivity();
     _isOnline = current != ConnectivityResult.none;
-    Connectivity().onConnectivityChanged.listen((result) {
+
+    Connectivity().onConnectivityChanged.listen((result) async {
+      final wasOffline = !_isOnline;
       _isOnline = result != ConnectivityResult.none;
+
+      // When coming back online, flush queued records to Supabase
+      if (wasOffline && _isOnline) {
+        print('🌐 Back online — flushing offline queue...');
+        await flushQueue();
+      }
     });
+  }
+
+  // ═══════════════════════════════════════════
+  // OFFLINE QUEUE
+  // ═══════════════════════════════════════════
+
+  /// Saves a failed sync to local SQLite queue.
+  Future<void> _enqueue(String table, Map<String, dynamic> payload) async {
+    final db = await DatabaseHelper.instance.database;
+    await db.insert('sync_queue', {
+      'table_name': table,
+      'operation': 'upsert',
+      'payload': jsonEncode(payload),
+    });
+    print('📥 Queued offline: $table');
+  }
+
+  /// Flushes all queued records to Supabase. Called when back online.
+  Future<void> flushQueue() async {
+    if (!_isOnline) return;
+    final db = await DatabaseHelper.instance.database;
+    final queued = await db.query('sync_queue', orderBy: 'id ASC');
+
+    if (queued.isEmpty) {
+      print('✅ Offline queue is empty.');
+      return;
+    }
+
+    print('🔄 Flushing ${queued.length} queued records...');
+
+    for (final item in queued) {
+      try {
+        final table = item['table_name'] as String;
+        final payload =
+            Map<String, dynamic>.from(jsonDecode(item['payload'] as String));
+
+        await _client.from(table).upsert(payload);
+        await db.delete('sync_queue',
+            where: 'id = ?', whereArgs: [item['id']]);
+        print('✅ Flushed queued record → $table');
+      } catch (e) {
+        print('❌ Failed to flush queued record: $e');
+        // Leave it in the queue to retry next time
+      }
+    }
   }
 
   // ═══════════════════════════════════════════
@@ -63,75 +117,103 @@ class SyncService {
   }
 
   // ═══════════════════════════════════════════
-  // PUSH: Local → Supabase
+  // PUSH: Local → Supabase (with offline queue)
   // ═══════════════════════════════════════════
 
   Future<void> pushAttendance(Map<String, dynamic> row) async {
-    if (!_isOnline) return;
+    if (!_isOnline) {
+      await _enqueue('attendance', row);
+      return;
+    }
     try {
       await _client.from('attendance').upsert(row);
     } catch (e) {
-      print('Sync attendance error: $e');
+      print('Sync attendance error: $e — queuing for retry');
+      await _enqueue('attendance', row);
     }
   }
 
   Future<void> pushStudent(Map<String, dynamic> row) async {
-    if (!_isOnline) return;
+    final sanitized = Map<String, dynamic>.from(row)
+      ..remove('face_embedding')
+      ..remove('embedding_path');
+    if (!_isOnline) {
+      await _enqueue('students', sanitized);
+      return;
+    }
     try {
-      final sanitized = Map<String, dynamic>.from(row)
-        ..remove('face_embedding')
-        ..remove('embedding_path');
       await _client.from('students').upsert(sanitized);
     } catch (e) {
-      print('Sync student error: $e');
+      print('Sync student error: $e — queuing for retry');
+      await _enqueue('students', sanitized);
     }
   }
 
   Future<void> pushProfessor(Map<String, dynamic> row) async {
-    if (!_isOnline) return;
+    final sanitized = Map<String, dynamic>.from(row)
+      ..remove('face_embedding');
+    // password is sha256 hashed — safe to sync
+    if (!_isOnline) {
+      await _enqueue('professors', sanitized);
+      return;
+    }
     try {
-      final sanitized = Map<String, dynamic>.from(row)
-        ..remove('face_embedding');
-      // password is sha256 hashed — safe to sync
       await _client.from('professors').upsert(sanitized);
     } catch (e) {
-      print('Sync professor error: $e');
+      print('Sync professor error: $e — queuing for retry');
+      await _enqueue('professors', sanitized);
     }
   }
 
   Future<void> pushSubject(Map<String, dynamic> row) async {
-    if (!_isOnline) return;
+    if (!_isOnline) {
+      await _enqueue('subjects', row);
+      return;
+    }
     try {
       await _client.from('subjects').upsert(row);
     } catch (e) {
-      print('Sync subject error: $e');
+      print('Sync subject error: $e — queuing for retry');
+      await _enqueue('subjects', row);
     }
   }
 
   Future<void> pushSection(Map<String, dynamic> row) async {
-    if (!_isOnline) return;
+    if (!_isOnline) {
+      await _enqueue('sections', row);
+      return;
+    }
     try {
       await _client.from('sections').upsert(row);
     } catch (e) {
-      print('Sync section error: $e');
+      print('Sync section error: $e — queuing for retry');
+      await _enqueue('sections', row);
     }
   }
 
   Future<void> pushSubjectSection(Map<String, dynamic> row) async {
-    if (!_isOnline) return;
+    if (!_isOnline) {
+      await _enqueue('subject_sections', row);
+      return;
+    }
     try {
       await _client.from('subject_sections').upsert(row);
     } catch (e) {
-      print('Sync subject_section error: $e');
+      print('Sync subject_section error: $e — queuing for retry');
+      await _enqueue('subject_sections', row);
     }
   }
 
   Future<void> pushProfessorSubject(Map<String, dynamic> row) async {
-    if (!_isOnline) return;
+    if (!_isOnline) {
+      await _enqueue('professor_subjects', row);
+      return;
+    }
     try {
       await _client.from('professor_subjects').upsert(row);
     } catch (e) {
-      print('Sync professor_subject error: $e');
+      print('Sync professor_subject error: $e — queuing for retry');
+      await _enqueue('professor_subjects', row);
     }
   }
 
@@ -280,9 +362,6 @@ class SyncService {
             rows = rows.map((row) {
               final clean = Map<String, dynamic>.from(row)
                 ..remove('face_embedding');
-              // Replace NULL password to satisfy SQLite NOT NULL constraint.
-              // Permanent fix: run in Supabase SQL editor:
-              // UPDATE professors SET password = '' WHERE password IS NULL;
               if (clean['password'] == null) clean['password'] = '';
               return clean;
             }).toList();
@@ -292,7 +371,7 @@ class SyncService {
             rows = rows.map((row) {
               return Map<String, dynamic>.from(row)
                 ..remove('face_embedding')
-                ..remove('embedding_path'); // Supabase-only column, not in local SQLite schema
+                ..remove('embedding_path');
             }).toList();
             break;
         }

@@ -26,7 +26,7 @@ class DatabaseHelper {
     final path = join(await getDatabasesPath(), 'sentry.db');
     return openDatabase(
       path,
-      version: 2,
+      version: 3,
       onCreate: _onCreate,
       onUpgrade: _onUpgrade,
     );
@@ -134,6 +134,16 @@ class DatabaseHelper {
       )
     ''');
 
+    await db.execute('''
+      CREATE TABLE sync_queue (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        table_name TEXT NOT NULL,
+        operation TEXT NOT NULL,
+        payload TEXT NOT NULL,
+        created_at TEXT DEFAULT (datetime('now'))
+      )
+    ''');
+
     await db.insert('admins', {
       'username': 'admin',
       'password': hashPassword('admin123'),
@@ -197,6 +207,18 @@ class DatabaseHelper {
         FROM attendance_old
       ''');
       await db.execute('DROP TABLE attendance_old');
+    }
+
+    if (oldVersion < 3) {
+      await db.execute('''
+        CREATE TABLE IF NOT EXISTS sync_queue (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          table_name TEXT NOT NULL,
+          operation TEXT NOT NULL,
+          payload TEXT NOT NULL,
+          created_at TEXT DEFAULT (datetime('now'))
+        )
+      ''');
     }
   }
 
@@ -553,26 +575,26 @@ class DatabaseHelper {
   }
 
   Future<List<Map<String, dynamic>>> getSectionsBySubject(
-    int subjectId) async {
-  final db = await database;
-  return db.rawQuery('''
-    SELECT
-      ss.id           AS subject_section_id,   -- ← THIS WAS MISSING
-      sec.id          AS section_id,
-      sec.section_name,
-      sec.course,
-      sec.year_level,
-      ss.schedule,
-      ss.room,
-      p.id            AS professor_id,
-      p.full_name     AS professor_name
-    FROM subject_sections ss
-    JOIN sections sec   ON ss.section_id  = sec.id
-    LEFT JOIN professors p ON ss.professor_id = p.id
-    WHERE ss.subject_id = ?
-    ORDER BY sec.section_name ASC
-  ''', [subjectId]);
-}
+      int subjectId) async {
+    final db = await database;
+    return db.rawQuery('''
+      SELECT
+        ss.id           AS subject_section_id,
+        sec.id          AS section_id,
+        sec.section_name,
+        sec.course,
+        sec.year_level,
+        ss.schedule,
+        ss.room,
+        p.id            AS professor_id,
+        p.full_name     AS professor_name
+      FROM subject_sections ss
+      JOIN sections sec   ON ss.section_id  = sec.id
+      LEFT JOIN professors p ON ss.professor_id = p.id
+      WHERE ss.subject_id = ?
+      ORDER BY sec.section_name ASC
+    ''', [subjectId]);
+  }
 
   // ═══════════════════════════════════════════════════════════════════
   // STUDENTS
