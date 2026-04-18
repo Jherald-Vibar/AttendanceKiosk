@@ -6,8 +6,16 @@ import 'package:camera/camera.dart';
 import 'package:google_mlkit_face_detection/google_mlkit_face_detection.dart';
 import 'dart:io';
 import 'dart:typed_data';
+import 'dart:async';
 import 'package:Sentry/database/database_helper.dart';
 import 'package:Sentry/services/face_recognition_service.dart';
+
+// ── Liveness config (shared constants) ───────────────────────────────────────
+const double _eyeOpenThreshold   = 0.7;
+const double _eyeClosedThreshold = 0.2;
+const Duration _blinkTimeout     = Duration(seconds: 6);
+
+enum _LivenessState { idle, waiting, blinkDone, failed }
 
 class FaceScanner extends StatefulWidget {
   final bool isKioskMode;
@@ -27,10 +35,16 @@ class _FaceScannerState extends State<FaceScanner> {
   List<EnrolledFace> _enrolledProfessors = [];
   bool _dbLoaded = false;
 
+  // ── Liveness state ────────────────────────────────────────────────
+  _LivenessState _livenessState = _LivenessState.idle;
+  Timer? _blinkTimeoutTimer;
+  int _blinkCountdown = 0;
+  bool _eyesWereOpen = false;
+
   final FaceDetector _faceDetector = FaceDetector(
     options: FaceDetectorOptions(
       enableContours: false,
-      enableClassification: false,
+      enableClassification: true,   // ← required for eye-open probability
       enableTracking: false,
       performanceMode: FaceDetectorMode.fast,
     ),
@@ -95,14 +109,103 @@ class _FaceScannerState extends State<FaceScanner> {
         final inputImage = _inputImageFromCameraImage(image);
         if (inputImage != null) {
           final faces = await _faceDetector.processImage(inputImage);
-          if (mounted) setState(() => _faceDetected = faces.isNotEmpty);
+          final detected = faces.isNotEmpty;
+          if (mounted) setState(() => _faceDetected = detected);
+
+          if (detected) {
+            _processLiveness(faces.first);
+          } else {
+            _resetLiveness();
+          }
         }
-      } catch (e) {
-        print('Error detecting faces: $e');
-      }
+      } catch (_) {}
       _isDetecting = false;
     });
     _isStreaming = true;
+  }
+
+  // ── Liveness helpers ──────────────────────────────────────────────
+
+  void _processLiveness(Face face) {
+    if (_livenessState == _LivenessState.blinkDone) return;
+    if (_livenessState == _LivenessState.failed) return;
+
+    final leftEye  = face.leftEyeOpenProbability;
+    final rightEye = face.rightEyeOpenProbability;
+    if (leftEye == null || rightEye == null) return;
+
+    final avgOpen = (leftEye + rightEye) / 2.0;
+
+    if (_livenessState == _LivenessState.idle) {
+      _startBlinkChallenge();
+      return;
+    }
+
+    if (_livenessState == _LivenessState.waiting) {
+      if (avgOpen >= _eyeOpenThreshold) {
+        _eyesWereOpen = true;
+      } else if (_eyesWereOpen && avgOpen <= _eyeClosedThreshold) {
+        _onBlinkDetected();
+      }
+    }
+  }
+
+  void _startBlinkChallenge() {
+    if (!mounted) return;
+    setState(() {
+      _livenessState  = _LivenessState.waiting;
+      _eyesWereOpen   = false;
+      _blinkCountdown = _blinkTimeout.inSeconds;
+    });
+
+    _blinkTimeoutTimer?.cancel();
+    _blinkTimeoutTimer = Timer.periodic(const Duration(seconds: 1), (t) {
+      if (!mounted) { t.cancel(); return; }
+      final remaining = _blinkCountdown - 1;
+      if (remaining <= 0) {
+        t.cancel();
+        _blinkTimeoutTimer = null;
+        _onBlinkTimeout();
+      } else {
+        setState(() => _blinkCountdown = remaining);
+      }
+    });
+  }
+
+  void _onBlinkDetected() {
+    _blinkTimeoutTimer?.cancel();
+    _blinkTimeoutTimer = null;
+    if (!mounted) return;
+    setState(() {
+      _livenessState  = _LivenessState.blinkDone;
+      _blinkCountdown = 0;
+    });
+  }
+
+  void _onBlinkTimeout() {
+    if (!mounted) return;
+    setState(() {
+      _livenessState  = _LivenessState.failed;
+      _blinkCountdown = 0;
+      _eyesWereOpen   = false;
+    });
+    _showError('Liveness check failed — move away and try again.');
+    Future.delayed(const Duration(seconds: 2), () {
+      if (mounted) setState(() => _livenessState = _LivenessState.idle);
+    });
+  }
+
+  void _resetLiveness() {
+    _blinkTimeoutTimer?.cancel();
+    _blinkTimeoutTimer = null;
+    if (!mounted) return;
+    if (_livenessState != _LivenessState.idle) {
+      setState(() {
+        _livenessState  = _LivenessState.idle;
+        _blinkCountdown = 0;
+        _eyesWereOpen   = false;
+      });
+    }
   }
 
   InputImage? _inputImageFromCameraImage(CameraImage image) {
@@ -129,8 +232,7 @@ class _FaceScannerState extends State<FaceScanner> {
           bytesPerRow: image.planes[0].bytesPerRow,
         ),
       );
-    } catch (e) {
-      print('Error converting image: $e');
+    } catch (_) {
       return null;
     }
   }
@@ -148,6 +250,14 @@ class _FaceScannerState extends State<FaceScanner> {
       ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
         content: Text('No face detected. Please position your face in the frame.'),
         backgroundColor: Colors.red,
+        behavior: SnackBarBehavior.floating,
+      ));
+      return;
+    }
+    if (_livenessState != _LivenessState.blinkDone) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+        content: Text('Please complete the blink check first.'),
+        backgroundColor: Colors.orange,
         behavior: SnackBarBehavior.floating,
       ));
       return;
@@ -177,8 +287,7 @@ class _FaceScannerState extends State<FaceScanner> {
       final xFile = await _cameraController!.takePicture();
 
       final inputImage = InputImage.fromFile(File(xFile.path));
-      final faces =
-          await FaceRecognitionService.instance.detectFaces(inputImage);
+      final faces = await FaceRecognitionService.instance.detectFaces(inputImage);
       if (faces.isEmpty) {
         _showError('No face on capture. Try again.');
         _restartStream();
@@ -201,10 +310,8 @@ class _FaceScannerState extends State<FaceScanner> {
         return;
       }
 
-      final profData =
-          await DatabaseHelper.instance.getProfessorById(match.id);
-      final subjects =
-          await DatabaseHelper.instance.getSubjectsByProfessor(match.id);
+      final profData = await DatabaseHelper.instance.getProfessorById(match.id);
+      final subjects = await DatabaseHelper.instance.getSubjectsByProfessor(match.id);
       if (profData == null) {
         _showError('Professor data not found.');
         _restartStream();
@@ -230,7 +337,7 @@ class _FaceScannerState extends State<FaceScanner> {
         ),
       ));
     } catch (e) {
-      print('Error during scan: $e');
+      debugPrint('Error during scan: $e');
       _showError('Error scanning face. Please try again.');
       _restartStream();
     } finally {
@@ -243,8 +350,9 @@ class _FaceScannerState extends State<FaceScanner> {
     setState(() {
       _isProcessing = false;
       _faceDetected = false;
-      _isStreaming = false;
+      _isStreaming   = false;
     });
+    _resetLiveness();
     Future.delayed(const Duration(milliseconds: 300), _startImageStream);
   }
 
@@ -260,25 +368,59 @@ class _FaceScannerState extends State<FaceScanner> {
   void _showUnknownDialog() {
     showDialog(
       context: context,
-      builder: (ctx) => AlertDialog(
-        title: const Text('Not Recognized'),
-        content: const Text(
-            'Face not found in the system.\nOnly registered professors can proceed.'),
-        actions: [
-          TextButton(
-              onPressed: () => Navigator.pop(ctx),
-              child: const Text('Try Again'))
-        ],
+      builder: (ctx) => Dialog(
+        backgroundColor: const Color(0xFF111827),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+        child: Padding(
+          padding: const EdgeInsets.all(28),
+          child: Column(mainAxisSize: MainAxisSize.min, children: [
+            Container(
+              width: 64, height: 64,
+              decoration: BoxDecoration(
+                  color: Colors.redAccent.withOpacity(0.15),
+                  shape: BoxShape.circle),
+              child: const Icon(Icons.no_accounts_rounded,
+                  color: Colors.redAccent, size: 34),
+            ),
+            const SizedBox(height: 16),
+            const Text('Not Recognized',
+                style: TextStyle(
+                    color: Colors.white,
+                    fontWeight: FontWeight.w800,
+                    fontSize: 18)),
+            const SizedBox(height: 8),
+            const Text(
+              'Face not found in the system.\nOnly registered professors can proceed.',
+              textAlign: TextAlign.center,
+              style: TextStyle(color: Color(0xFF8B9DC3), fontSize: 13),
+            ),
+            const SizedBox(height: 20),
+            SizedBox(
+              width: double.infinity, height: 46,
+              child: ElevatedButton(
+                onPressed: () => Navigator.pop(ctx),
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: Colors.redAccent,
+                  foregroundColor: Colors.white,
+                  elevation: 0,
+                  shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(12)),
+                ),
+                child: const Text('Try Again',
+                    style: TextStyle(fontWeight: FontWeight.w700)),
+              ),
+            ),
+          ]),
+        ),
       ),
     );
   }
 
   @override
   void dispose() {
+    _blinkTimeoutTimer?.cancel();
     if (_isStreaming) {
-      try {
-        _cameraController?.stopImageStream();
-      } catch (_) {}
+      try { _cameraController?.stopImageStream(); } catch (_) {}
       _isStreaming = false;
     }
     _cameraController?.dispose();
@@ -288,19 +430,32 @@ class _FaceScannerState extends State<FaceScanner> {
 
   @override
   Widget build(BuildContext context) {
-    if (_cameraController == null ||
-        !_cameraController!.value.isInitialized) {
+    if (_cameraController == null || !_cameraController!.value.isInitialized) {
       return const Scaffold(
         backgroundColor: Colors.black,
-        body: Center(
-            child: CircularProgressIndicator(color: Colors.white)),
+        body: Center(child: CircularProgressIndicator(color: Colors.white)),
       );
     }
 
-    // ✅ Compute dynamic sizes once from actual screen height
-    final screenHeight = MediaQuery.of(context).size.height;
-    final frameSize = screenHeight * 0.38;         // face frame scales with screen
-    final verticalSpacing = screenHeight * 0.04;   // replaces fixed SizedBox(50)
+    final screenHeight    = MediaQuery.of(context).size.height;
+    final frameSize       = screenHeight * 0.38;
+    final verticalSpacing = screenHeight * 0.04;
+
+    final bool livenessWaiting = _livenessState == _LivenessState.waiting;
+    final bool livenessPassed  = _livenessState == _LivenessState.blinkDone;
+    final bool livenessFailed  = _livenessState == _LivenessState.failed;
+
+    // Frame corner colour
+    final Color frameColor = livenessFailed
+        ? Colors.redAccent
+        : livenessWaiting
+            ? Colors.amber
+            : livenessPassed
+                ? Colors.green
+                : Colors.white;
+
+    // Scan button enabled only when liveness passed
+    final bool canScan = _faceDetected && livenessPassed && !_isProcessing;
 
     return Scaffold(
       body: Stack(
@@ -336,10 +491,10 @@ class _FaceScannerState extends State<FaceScanner> {
           SafeArea(
             child: Column(
               children: [
-                // ── Title ──────────────────────────────────────────
-                Padding(
-                  padding: const EdgeInsets.only(top: 20, bottom: 10),
-                  child: const Text('SENTRY',
+                // ── Title ────────────────────────────────────────
+                const Padding(
+                  padding: EdgeInsets.only(top: 20, bottom: 10),
+                  child: Text('SENTRY',
                       style: TextStyle(
                           color: Colors.white,
                           fontSize: 32,
@@ -348,11 +503,9 @@ class _FaceScannerState extends State<FaceScanner> {
                           letterSpacing: 2)),
                 ),
 
-                // ── Centre content — Expanded so it fills remaining space ──
+                // ── Centre content ────────────────────────────────
                 Expanded(
                   child: SingleChildScrollView(
-                    // ✅ SingleChildScrollView prevents overflow on very
-                    //    small screens; on normal screens nothing scrolls
                     physics: const ClampingScrollPhysics(),
                     child: Padding(
                       padding: const EdgeInsets.symmetric(horizontal: 30),
@@ -367,49 +520,111 @@ class _FaceScannerState extends State<FaceScanner> {
                                   fontWeight: FontWeight.w500)),
                           SizedBox(height: verticalSpacing),
 
-                          // ✅ Face frame — size tied to screen height
+                          // ── Face frame ────────────────────────────
                           SizedBox(
                             width: frameSize * 0.8,
                             height: frameSize,
                             child: Stack(children: [
-                              Positioned(
-                                  top: 0,
-                                  left: 0,
-                                  child: _buildCorner(true, true, _faceDetected)),
-                              Positioned(
-                                  top: 0,
-                                  right: 0,
-                                  child: _buildCorner(true, false, _faceDetected)),
-                              Positioned(
-                                  bottom: 0,
-                                  left: 0,
-                                  child: _buildCorner(false, true, _faceDetected)),
-                              Positioned(
-                                  bottom: 0,
-                                  right: 0,
-                                  child: _buildCorner(false, false, _faceDetected)),
-                              if (_faceDetected)
+                              Positioned(top: 0, left: 0,
+                                  child: _buildCorner(true, true, frameColor)),
+                              Positioned(top: 0, right: 0,
+                                  child: _buildCorner(true, false, frameColor)),
+                              Positioned(bottom: 0, left: 0,
+                                  child: _buildCorner(false, true, frameColor)),
+                              Positioned(bottom: 0, right: 0,
+                                  child: _buildCorner(false, false, frameColor)),
+
+                              // Liveness overlays
+                              if (livenessWaiting)
+                                Center(
+                                  child: Column(mainAxisSize: MainAxisSize.min, children: [
+                                    const Icon(Icons.remove_red_eye_outlined,
+                                        color: Colors.amber, size: 40),
+                                    const SizedBox(height: 6),
+                                    const Text('Please BLINK',
+                                        style: TextStyle(
+                                            color: Colors.amber,
+                                            fontSize: 16,
+                                            fontWeight: FontWeight.w800)),
+                                    const SizedBox(height: 4),
+                                    Text('$_blinkCountdown s',
+                                        style: const TextStyle(
+                                            color: Colors.amber,
+                                            fontSize: 13,
+                                            fontWeight: FontWeight.w600)),
+                                  ]),
+                                ),
+
+                              if (livenessFailed)
+                                Center(
+                                  child: Column(mainAxisSize: MainAxisSize.min, children: [
+                                    const Icon(Icons.gpp_bad_rounded,
+                                        color: Colors.redAccent, size: 40),
+                                    const SizedBox(height: 6),
+                                    const Text('Liveness Failed',
+                                        style: TextStyle(
+                                            color: Colors.redAccent,
+                                            fontSize: 14,
+                                            fontWeight: FontWeight.w700)),
+                                    const SizedBox(height: 2),
+                                    const Text('Move away & retry',
+                                        style: TextStyle(
+                                            color: Colors.redAccent,
+                                            fontSize: 12)),
+                                  ]),
+                                ),
+
+                              if (livenessPassed)
                                 const Center(
-                                    child: Icon(Icons.check_circle,
-                                        color: Colors.green, size: 64)),
+                                  child: Icon(Icons.verified_rounded,
+                                      color: Colors.green, size: 64),
+                                ),
                             ]),
                           ),
 
                           SizedBox(height: verticalSpacing),
+
+                          // Status text
                           Text(
-                            _faceDetected
-                                ? 'Face detected! Ready to scan.'
-                                : 'Find a good lighting spot',
+                            livenessFailed
+                                ? 'Blink check failed — move away & retry'
+                                : livenessWaiting
+                                    ? 'Blink now! ($_blinkCountdown s remaining)'
+                                    : livenessPassed
+                                        ? '✓ Liveness confirmed — tap Scan'
+                                        : _faceDetected
+                                            ? 'Starting liveness check...'
+                                            : 'Find a good lighting spot',
+                            textAlign: TextAlign.center,
                             style: TextStyle(
-                              color: _faceDetected
-                                  ? Colors.green
-                                  : Colors.white.withOpacity(0.8),
+                              color: livenessFailed
+                                  ? Colors.redAccent
+                                  : livenessWaiting
+                                      ? Colors.amber
+                                      : livenessPassed
+                                          ? Colors.green
+                                          : Colors.white.withOpacity(0.8),
                               fontSize: 16,
-                              fontWeight: _faceDetected
+                              fontWeight: (livenessFailed || livenessWaiting ||
+                                      livenessPassed)
                                   ? FontWeight.bold
                                   : FontWeight.normal,
                             ),
                           ),
+
+                          if (!livenessWaiting && !livenessPassed && !livenessFailed)
+                            Padding(
+                              padding: const EdgeInsets.only(top: 6),
+                              child: Text(
+                                'You will be asked to blink to confirm liveness',
+                                textAlign: TextAlign.center,
+                                style: TextStyle(
+                                  color: Colors.white.withOpacity(0.4),
+                                  fontSize: 12,
+                                ),
+                              ),
+                            ),
+
                           SizedBox(height: verticalSpacing),
                         ],
                       ),
@@ -417,7 +632,7 @@ class _FaceScannerState extends State<FaceScanner> {
                   ),
                 ),
 
-                // ── Bottom buttons — always anchored at the bottom ──
+                // ── Bottom buttons ────────────────────────────────
                 Padding(
                   padding: const EdgeInsets.fromLTRB(30, 0, 30, 30),
                   child: Column(
@@ -427,11 +642,9 @@ class _FaceScannerState extends State<FaceScanner> {
                         width: double.infinity,
                         height: 55,
                         child: ElevatedButton(
-                          onPressed: (_faceDetected && !_isProcessing)
-                              ? _handleScan
-                              : null,
+                          onPressed: canScan ? _handleScan : null,
                           style: ElevatedButton.styleFrom(
-                            backgroundColor: _faceDetected
+                            backgroundColor: livenessPassed
                                 ? Colors.green
                                 : Colors.black,
                             foregroundColor: Colors.white,
@@ -479,39 +692,29 @@ class _FaceScannerState extends State<FaceScanner> {
     );
   }
 
-  Widget _buildCorner(bool isTop, bool isLeft, bool faceDetected) {
-    final Color borderColor = faceDetected ? Colors.green : Colors.white;
+  Widget _buildCorner(bool isTop, bool isLeft, Color color) {
     return Container(
-      width: 70,
-      height: 70,
+      width: 70, height: 70,
       decoration: BoxDecoration(
         border: Border(
           top: isTop
-              ? BorderSide(color: borderColor, width: 5)
+              ? BorderSide(color: color, width: 5)
               : BorderSide.none,
           bottom: !isTop
-              ? BorderSide(color: borderColor, width: 5)
+              ? BorderSide(color: color, width: 5)
               : BorderSide.none,
           left: isLeft
-              ? BorderSide(color: borderColor, width: 5)
+              ? BorderSide(color: color, width: 5)
               : BorderSide.none,
           right: !isLeft
-              ? BorderSide(color: borderColor, width: 5)
+              ? BorderSide(color: color, width: 5)
               : BorderSide.none,
         ),
         borderRadius: BorderRadius.only(
-          topLeft: isTop && isLeft
-              ? const Radius.circular(20)
-              : Radius.zero,
-          topRight: isTop && !isLeft
-              ? const Radius.circular(20)
-              : Radius.zero,
-          bottomLeft: !isTop && isLeft
-              ? const Radius.circular(20)
-              : Radius.zero,
-          bottomRight: !isTop && !isLeft
-              ? const Radius.circular(20)
-              : Radius.zero,
+          topLeft:     isTop && isLeft   ? const Radius.circular(20) : Radius.zero,
+          topRight:    isTop && !isLeft  ? const Radius.circular(20) : Radius.zero,
+          bottomLeft:  !isTop && isLeft  ? const Radius.circular(20) : Radius.zero,
+          bottomRight: !isTop && !isLeft ? const Radius.circular(20) : Radius.zero,
         ),
       ),
     );

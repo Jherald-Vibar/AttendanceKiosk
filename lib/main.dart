@@ -9,9 +9,17 @@ import 'package:Sentry/database/database_helper.dart';
 import 'package:Sentry/services/face_recognition_service.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:Sentry/services/sync_service.dart';
-import 'package:shared_preferences/shared_preferences.dart'; // ← ADD THIS
+import 'package:shared_preferences/shared_preferences.dart';
 import 'dart:io';
 import 'dart:typed_data';
+import 'dart:async';
+
+// ── Liveness config ───────────────────────────────────────────────────────────
+const double _eyeOpenThreshold   = 0.7;
+const double _eyeClosedThreshold = 0.2;
+const Duration _blinkTimeout     = Duration(seconds: 6);
+
+enum _LivenessState { idle, waiting, blinkDone, failed }
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -23,7 +31,6 @@ void main() async {
 
   await SyncService.instance.init();
 
-  // ── Seed local SQLite from Supabase on first launch ──────────────
   try {
     final prefs = await SharedPreferences.getInstance();
     final alreadySeeded = prefs.getBool('seeded_from_supabase') ?? false;
@@ -39,7 +46,6 @@ void main() async {
   } catch (e) {
     debugPrint('❌ Seed error: $e');
   }
-  // ─────────────────────────────────────────────────────────────────
 
   runApp(const MyApp());
 }
@@ -161,7 +167,7 @@ class HomePage extends StatelessWidget {
   }
 }
 
-// ── Admin Scan Dialog ──────────────────────────────────────────────────
+// ── Admin Scan Dialog — with blink liveness ────────────────────────────────────
 
 class _AdminScanDialog extends StatefulWidget {
   const _AdminScanDialog();
@@ -181,10 +187,16 @@ class _AdminScanDialogState extends State<_AdminScanDialog> {
   List<EnrolledFace> _enrolledAdmins = [];
   bool _dbLoaded = false;
 
+  // ── Liveness state ────────────────────────────────────────────────
+  _LivenessState _livenessState = _LivenessState.idle;
+  Timer? _blinkTimeoutTimer;
+  int _blinkCountdown = 0;
+  bool _eyesWereOpen = false;
+
   final FaceDetector _faceDetector = FaceDetector(
     options: FaceDetectorOptions(
       enableContours: false,
-      enableClassification: false,
+      enableClassification: true,   // ← required for eye-open probability
       enableTracking: false,
       performanceMode: FaceDetectorMode.fast,
     ),
@@ -255,12 +267,103 @@ class _AdminScanDialogState extends State<_AdminScanDialog> {
         final inputImage = _toInputImage(image);
         if (inputImage != null) {
           final faces = await _faceDetector.processImage(inputImage);
-          if (mounted) setState(() => _faceDetected = faces.isNotEmpty);
+          final detected = faces.isNotEmpty;
+          if (mounted) setState(() => _faceDetected = detected);
+
+          if (detected) {
+            _processLiveness(faces.first);
+          } else {
+            _resetLiveness();
+          }
         }
       } catch (_) {}
       _isDetecting = false;
     });
     _isStreaming = true;
+  }
+
+  // ── Liveness helpers ──────────────────────────────────────────────
+
+  void _processLiveness(Face face) {
+    if (_livenessState == _LivenessState.blinkDone) return;
+    if (_livenessState == _LivenessState.failed) return;
+
+    final leftEye  = face.leftEyeOpenProbability;
+    final rightEye = face.rightEyeOpenProbability;
+    if (leftEye == null || rightEye == null) return;
+
+    final avgOpen = (leftEye + rightEye) / 2.0;
+
+    if (_livenessState == _LivenessState.idle) {
+      _startBlinkChallenge();
+      return;
+    }
+
+    if (_livenessState == _LivenessState.waiting) {
+      if (avgOpen >= _eyeOpenThreshold) {
+        _eyesWereOpen = true;
+      } else if (_eyesWereOpen && avgOpen <= _eyeClosedThreshold) {
+        _onBlinkDetected();
+      }
+    }
+  }
+
+  void _startBlinkChallenge() {
+    if (!mounted) return;
+    setState(() {
+      _livenessState  = _LivenessState.waiting;
+      _eyesWereOpen   = false;
+      _blinkCountdown = _blinkTimeout.inSeconds;
+    });
+
+    _blinkTimeoutTimer?.cancel();
+    _blinkTimeoutTimer = Timer.periodic(const Duration(seconds: 1), (t) {
+      if (!mounted) { t.cancel(); return; }
+      final remaining = _blinkCountdown - 1;
+      if (remaining <= 0) {
+        t.cancel();
+        _blinkTimeoutTimer = null;
+        _onBlinkTimeout();
+      } else {
+        setState(() => _blinkCountdown = remaining);
+      }
+    });
+  }
+
+  void _onBlinkDetected() {
+    _blinkTimeoutTimer?.cancel();
+    _blinkTimeoutTimer = null;
+    if (!mounted) return;
+    setState(() {
+      _livenessState  = _LivenessState.blinkDone;
+      _blinkCountdown = 0;
+    });
+  }
+
+  void _onBlinkTimeout() {
+    if (!mounted) return;
+    setState(() {
+      _livenessState  = _LivenessState.failed;
+      _blinkCountdown = 0;
+      _eyesWereOpen   = false;
+    });
+    _showError('Liveness check failed — move away and try again.');
+    Future.delayed(const Duration(seconds: 2), () {
+      if (mounted) setState(() => _livenessState = _LivenessState.idle);
+    });
+  }
+
+  void _resetLiveness() {
+    _blinkTimeoutTimer?.cancel();
+    _blinkTimeoutTimer = null;
+    if (!mounted) return;
+    if (_livenessState != _LivenessState.idle) {
+      setState(() {
+        _livenessState  = _LivenessState.idle;
+        _blinkCountdown = 0;
+        _eyesWereOpen   = false;
+      });
+    }
   }
 
   InputImage? _toInputImage(CameraImage image) {
@@ -299,23 +402,18 @@ class _AdminScanDialogState extends State<_AdminScanDialog> {
 
   void _handleScan() async {
     if (!_faceDetected) {
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
-        content: Text('No face detected.'),
-        backgroundColor: Colors.red,
-        behavior: SnackBarBehavior.floating,
-      ));
+      _showError('No face detected.');
+      return;
+    }
+    if (_livenessState != _LivenessState.blinkDone) {
+      _showError('Please complete the blink check first.');
       return;
     }
     if (!_dbLoaded || _enrolledAdmins.isEmpty) {
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
-        content: Text('No admin face enrolled. Please enroll in account settings first.'),
-        backgroundColor: Colors.orange,
-        behavior: SnackBarBehavior.floating,
-      ));
+      _showError('No admin face enrolled. Please enroll in account settings first.');
       return;
     }
-    if (_cameraController == null ||
-        !_cameraController!.value.isInitialized) {
+    if (_cameraController == null || !_cameraController!.value.isInitialized) {
       _showError('Camera not ready. Please wait.');
       return;
     }
@@ -330,8 +428,7 @@ class _AdminScanDialogState extends State<_AdminScanDialog> {
       final xFile = await _cameraController!.takePicture();
 
       final inputImage = InputImage.fromFile(File(xFile.path));
-      final faces =
-          await FaceRecognitionService.instance.detectFaces(inputImage);
+      final faces = await FaceRecognitionService.instance.detectFaces(inputImage);
       if (faces.isEmpty) {
         _showError('No face on capture. Try again.');
         _restartStream();
@@ -386,6 +483,7 @@ class _AdminScanDialogState extends State<_AdminScanDialog> {
       _isProcessing = false;
       _faceDetected = false;
     });
+    _resetLiveness();
     Future.delayed(const Duration(milliseconds: 300), () {
       if (mounted) _startStream();
     });
@@ -402,10 +500,9 @@ class _AdminScanDialogState extends State<_AdminScanDialog> {
 
   @override
   void dispose() {
+    _blinkTimeoutTimer?.cancel();
     if (_isStreaming) {
-      try {
-        _cameraController?.stopImageStream();
-      } catch (_) {}
+      try { _cameraController?.stopImageStream(); } catch (_) {}
       _isStreaming = false;
     }
     _cameraController?.dispose();
@@ -416,6 +513,21 @@ class _AdminScanDialogState extends State<_AdminScanDialog> {
 
   @override
   Widget build(BuildContext context) {
+    final bool livenessWaiting = _livenessState == _LivenessState.waiting;
+    final bool livenessPassed  = _livenessState == _LivenessState.blinkDone;
+    final bool livenessFailed  = _livenessState == _LivenessState.failed;
+
+    final bool canScan = _faceDetected && livenessPassed && !_isProcessing;
+
+    // Frame colour
+    final Color frameColor = livenessFailed
+        ? Colors.redAccent
+        : livenessWaiting
+            ? Colors.amber
+            : livenessPassed
+                ? Colors.green
+                : Colors.white;
+
     return Dialog(
       backgroundColor: Colors.transparent,
       insetPadding: const EdgeInsets.symmetric(horizontal: 32),
@@ -466,7 +578,7 @@ class _AdminScanDialogState extends State<_AdminScanDialog> {
                               fontSize: 17,
                               fontWeight: FontWeight.w700,
                             )),
-                        Text('Admin verification required',
+                        Text('Blink to confirm liveness, then scan',
                             style: TextStyle(
                               color: Color(0xFF8B9DC3),
                               fontSize: 12,
@@ -511,18 +623,76 @@ class _AdminScanDialogState extends State<_AdminScanDialog> {
                               fit: StackFit.expand,
                               children: [
                                 CameraPreview(_cameraController!),
+
+                                // Corner frame painter (colour-reactive)
                                 CustomPaint(
-                                  painter: _CornerFramePainter(
-                                    color: _faceDetected
-                                        ? Colors.green
-                                        : Colors.white,
-                                  ),
+                                  painter: _CornerFramePainter(color: frameColor),
                                 ),
-                                if (_faceDetected)
-                                  const Center(
-                                    child: Icon(Icons.check_circle,
-                                        color: Colors.green, size: 48),
+
+                                // Blink challenge overlay
+                                if (livenessWaiting)
+                                  Container(
+                                    color: Colors.black38,
+                                    child: Center(
+                                      child: Column(
+                                          mainAxisSize: MainAxisSize.min,
+                                          children: [
+                                            const Icon(
+                                                Icons.remove_red_eye_outlined,
+                                                color: Colors.amber,
+                                                size: 44),
+                                            const SizedBox(height: 8),
+                                            const Text('Please BLINK',
+                                                style: TextStyle(
+                                                    color: Colors.amber,
+                                                    fontSize: 18,
+                                                    fontWeight:
+                                                        FontWeight.w800)),
+                                            const SizedBox(height: 4),
+                                            Text('$_blinkCountdown s remaining',
+                                                style: const TextStyle(
+                                                    color: Colors.amber,
+                                                    fontSize: 13)),
+                                          ]),
+                                    ),
                                   ),
+
+                                // Liveness failed overlay
+                                if (livenessFailed)
+                                  Container(
+                                    color: Colors.black54,
+                                    child: const Center(
+                                      child: Column(
+                                          mainAxisSize: MainAxisSize.min,
+                                          children: [
+                                            Icon(Icons.gpp_bad_rounded,
+                                                color: Colors.redAccent,
+                                                size: 44),
+                                            SizedBox(height: 8),
+                                            Text('Liveness Failed',
+                                                style: TextStyle(
+                                                    color: Colors.redAccent,
+                                                    fontSize: 16,
+                                                    fontWeight:
+                                                        FontWeight.w800)),
+                                            SizedBox(height: 4),
+                                            Text('Move away & try again',
+                                                style: TextStyle(
+                                                    color: Colors.redAccent,
+                                                    fontSize: 12)),
+                                          ]),
+                                    ),
+                                  ),
+
+                                // Liveness passed badge
+                                if (livenessPassed && !_isProcessing)
+                                  const Positioned(
+                                    top: 10, right: 10,
+                                    child: Icon(Icons.verified_rounded,
+                                        color: Colors.green, size: 32),
+                                  ),
+
+                                // Processing overlay
                                 if (_isProcessing)
                                   Container(
                                     color: Colors.black54,
@@ -558,16 +728,30 @@ class _AdminScanDialogState extends State<_AdminScanDialog> {
 
                   const SizedBox(height: 12),
 
+                  // Status text
                   Text(
-                    _faceDetected
-                        ? 'Face detected! Ready to scan.'
-                        : 'Position your face within the frame',
+                    _isProcessing
+                        ? 'Verifying...'
+                        : livenessFailed
+                            ? 'Blink check failed — move away & retry'
+                            : livenessWaiting
+                                ? 'Blink now! ($_blinkCountdown s)'
+                                : livenessPassed
+                                    ? '✓ Liveness confirmed — tap Scan'
+                                    : _faceDetected
+                                        ? 'Starting liveness check...'
+                                        : 'Position your face within the frame',
                     style: TextStyle(
-                      color: _faceDetected
-                          ? Colors.green
-                          : const Color(0xFF8B9DC3),
+                      color: livenessFailed
+                          ? Colors.redAccent
+                          : livenessWaiting
+                              ? Colors.orange
+                              : livenessPassed
+                                  ? Colors.green
+                                  : const Color(0xFF8B9DC3),
                       fontSize: 13,
-                      fontWeight: _faceDetected
+                      fontWeight: (livenessPassed || livenessWaiting ||
+                              livenessFailed)
                           ? FontWeight.w600
                           : FontWeight.normal,
                     ),
@@ -580,9 +764,7 @@ class _AdminScanDialogState extends State<_AdminScanDialog> {
                     width: double.infinity,
                     height: 52,
                     child: ElevatedButton.icon(
-                      onPressed: (_faceDetected && !_isProcessing)
-                          ? _handleScan
-                          : null,
+                      onPressed: canScan ? _handleScan : null,
                       icon: const Icon(
                           Icons.face_retouching_natural_rounded,
                           size: 20),
@@ -591,7 +773,7 @@ class _AdminScanDialogState extends State<_AdminScanDialog> {
                               fontSize: 15,
                               fontWeight: FontWeight.w700)),
                       style: ElevatedButton.styleFrom(
-                        backgroundColor: _faceDetected
+                        backgroundColor: livenessPassed
                             ? Colors.green
                             : const Color(0xFF0A0E1A),
                         foregroundColor: Colors.white,
@@ -624,7 +806,7 @@ class _AdminScanDialogState extends State<_AdminScanDialog> {
   }
 }
 
-// ── Corner Frame Painter ───────────────────────────────────────────────
+// ── Corner Frame Painter ───────────────────────────────────────────────────────
 
 class _CornerFramePainter extends CustomPainter {
   final Color color;
@@ -641,14 +823,10 @@ class _CornerFramePainter extends CustomPainter {
     const c = 20.0;
     canvas.drawLine(const Offset(0, c), const Offset(0, 0), paint);
     canvas.drawLine(const Offset(0, 0), const Offset(c, 0), paint);
-    canvas.drawLine(
-        Offset(size.width - c, 0), Offset(size.width, 0), paint);
-    canvas.drawLine(
-        Offset(size.width, 0), Offset(size.width, c), paint);
-    canvas.drawLine(
-        Offset(0, size.height - c), Offset(0, size.height), paint);
-    canvas.drawLine(
-        Offset(0, size.height), Offset(c, size.height), paint);
+    canvas.drawLine(Offset(size.width - c, 0), Offset(size.width, 0), paint);
+    canvas.drawLine(Offset(size.width, 0), Offset(size.width, c), paint);
+    canvas.drawLine(Offset(0, size.height - c), Offset(0, size.height), paint);
+    canvas.drawLine(Offset(0, size.height), Offset(c, size.height), paint);
     canvas.drawLine(Offset(size.width - c, size.height),
         Offset(size.width, size.height), paint);
     canvas.drawLine(Offset(size.width, size.height),

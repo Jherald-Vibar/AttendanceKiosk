@@ -39,10 +39,9 @@ class _AdminDashboardState extends State<AdminDashboard> {
     if (mounted) setState(() { _stats = stats; _loading = false; });
   }
 
-  // ── Back button → logout confirm dialog, NEVER go back to login ───
   Future<bool> _onWillPop() async {
     _showLogoutDialog();
-    return false; // always block automatic back
+    return false;
   }
 
   void _showLogoutDialog() {
@@ -51,8 +50,7 @@ class _AdminDashboardState extends State<AdminDashboard> {
       barrierDismissible: true,
       builder: (ctx) => Dialog(
         backgroundColor: const Color(0xFF1C2536),
-        shape: RoundedRectangleBorder(
-            borderRadius: BorderRadius.circular(20)),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
         child: Padding(
           padding: const EdgeInsets.all(24),
           child: Column(
@@ -63,8 +61,7 @@ class _AdminDashboardState extends State<AdminDashboard> {
                 decoration: BoxDecoration(
                   color: Colors.redAccent.withOpacity(0.1),
                   borderRadius: BorderRadius.circular(16),
-                  border: Border.all(
-                      color: Colors.redAccent.withOpacity(0.3)),
+                  border: Border.all(color: Colors.redAccent.withOpacity(0.3)),
                 ),
                 child: const Icon(Icons.logout_rounded,
                     color: Colors.redAccent, size: 26),
@@ -79,8 +76,7 @@ class _AdminDashboardState extends State<AdminDashboard> {
               const Text(
                 'Are you sure you want to logout?',
                 textAlign: TextAlign.center,
-                style: TextStyle(
-                    color: Color(0xFF8B9DC3), fontSize: 13),
+                style: TextStyle(color: Color(0xFF8B9DC3), fontSize: 13),
               ),
               const SizedBox(height: 24),
               Row(
@@ -89,12 +85,10 @@ class _AdminDashboardState extends State<AdminDashboard> {
                     child: TextButton(
                       onPressed: () => Navigator.pop(ctx),
                       style: TextButton.styleFrom(
-                        backgroundColor:
-                            Colors.white.withOpacity(0.05),
+                        backgroundColor: Colors.white.withOpacity(0.05),
                         shape: RoundedRectangleBorder(
                             borderRadius: BorderRadius.circular(10)),
-                        padding: const EdgeInsets.symmetric(
-                            vertical: 13),
+                        padding: const EdgeInsets.symmetric(vertical: 13),
                       ),
                       child: const Text('Cancel',
                           style: TextStyle(
@@ -107,10 +101,8 @@ class _AdminDashboardState extends State<AdminDashboard> {
                     child: ElevatedButton(
                       onPressed: () {
                         Navigator.pop(ctx);
-                        // Clear entire stack and go to HomePage
                         Navigator.of(context).pushAndRemoveUntil(
-                          MaterialPageRoute(
-                              builder: (_) => const HomePage()),
+                          MaterialPageRoute(builder: (_) => const HomePage()),
                           (route) => false,
                         );
                       },
@@ -120,12 +112,10 @@ class _AdminDashboardState extends State<AdminDashboard> {
                         elevation: 0,
                         shape: RoundedRectangleBorder(
                             borderRadius: BorderRadius.circular(10)),
-                        padding: const EdgeInsets.symmetric(
-                            vertical: 13),
+                        padding: const EdgeInsets.symmetric(vertical: 13),
                       ),
                       child: const Text('Logout',
-                          style:
-                              TextStyle(fontWeight: FontWeight.w700)),
+                          style: TextStyle(fontWeight: FontWeight.w700)),
                     ),
                   ),
                 ],
@@ -137,10 +127,50 @@ class _AdminDashboardState extends State<AdminDashboard> {
     );
   }
 
+  // ── Navigation helpers ────────────────────────────────────────────
+  void _goTo(Widget screen) {
+    Navigator.push(
+      context,
+      MaterialPageRoute(builder: (_) => screen),
+    ).then((_) => _loadStats());
+  }
+
   @override
   Widget build(BuildContext context) {
     final now = DateTime.now();
     final adminName = widget.admin['full_name'] ?? 'Admin';
+
+    // Stat card definitions — each carries its destination route
+    final statItems = [
+      {
+        'label': 'Professors',
+        'value': '${_stats['professors']}',
+        'icon': Icons.school_rounded,
+        'color': const Color(0xFF00D4FF),
+        'screen': const ManageProfessors(),
+      },
+      {
+        'label': 'Subjects',
+        'value': '${_stats['subjects']}',
+        'icon': Icons.menu_book_rounded,
+        'color': const Color(0xFF00E676),
+        'screen': const ManageSubjects(),
+      },
+      {
+        'label': 'Sections',
+        'value': '${_stats['sections']}',
+        'icon': Icons.groups_rounded,
+        'color': const Color(0xFFFFB800),
+        'screen': const ManageSections(),
+      },
+      {
+        'label': 'Students',
+        'value': '${_stats['students']}',
+        'icon': Icons.person_rounded,
+        'color': const Color(0xFFB06EFF),
+        'screen': const ManageStudents(),
+      },
+    ];
 
     return WillPopScope(
       onWillPop: _onWillPop,
@@ -158,8 +188,7 @@ class _AdminDashboardState extends State<AdminDashboard> {
                   child: Padding(
                     padding: const EdgeInsets.fromLTRB(24, 20, 24, 0),
                     child: Row(
-                      mainAxisAlignment:
-                          MainAxisAlignment.spaceBetween,
+                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
                       children: [
                         Column(
                           crossAxisAlignment: CrossAxisAlignment.start,
@@ -167,8 +196,7 @@ class _AdminDashboardState extends State<AdminDashboard> {
                             Text(
                               DateFormat('EEEE, MMM d').format(now),
                               style: const TextStyle(
-                                  color: Color(0xFF8B9DC3),
-                                  fontSize: 13),
+                                  color: Color(0xFF8B9DC3), fontSize: 13),
                             ),
                             const SizedBox(height: 4),
                             Text(
@@ -183,7 +211,6 @@ class _AdminDashboardState extends State<AdminDashboard> {
                         ),
                         Row(
                           children: [
-                            // Account settings
                             GestureDetector(
                               onTap: () => Navigator.push(
                                 context,
@@ -196,8 +223,7 @@ class _AdminDashboardState extends State<AdminDashboard> {
                                 width: 44, height: 44,
                                 decoration: BoxDecoration(
                                   color: const Color(0xFF1C2536),
-                                  borderRadius:
-                                      BorderRadius.circular(12),
+                                  borderRadius: BorderRadius.circular(12),
                                   border: Border.all(
                                       color: const Color(0xFF1E2D45)),
                                 ),
@@ -208,24 +234,18 @@ class _AdminDashboardState extends State<AdminDashboard> {
                               ),
                             ),
                             const SizedBox(width: 10),
-                            // Logout button
                             GestureDetector(
                               onTap: _showLogoutDialog,
                               child: Container(
                                 width: 44, height: 44,
                                 decoration: BoxDecoration(
-                                  color: Colors.redAccent
-                                      .withOpacity(0.1),
-                                  borderRadius:
-                                      BorderRadius.circular(12),
+                                  color: Colors.redAccent.withOpacity(0.1),
+                                  borderRadius: BorderRadius.circular(12),
                                   border: Border.all(
-                                      color: Colors.redAccent
-                                          .withOpacity(0.3)),
+                                      color: Colors.redAccent.withOpacity(0.3)),
                                 ),
-                                child: const Icon(
-                                    Icons.logout_rounded,
-                                    color: Colors.redAccent,
-                                    size: 20),
+                                child: const Icon(Icons.logout_rounded,
+                                    color: Colors.redAccent, size: 20),
                               ),
                             ),
                           ],
@@ -250,8 +270,7 @@ class _AdminDashboardState extends State<AdminDashboard> {
                         borderRadius: BorderRadius.circular(20),
                         boxShadow: [
                           BoxShadow(
-                            color: const Color(0xFF1E3A8A)
-                                .withOpacity(0.4),
+                            color: const Color(0xFF1E3A8A).withOpacity(0.4),
                             blurRadius: 20,
                             offset: const Offset(0, 8),
                           ),
@@ -273,8 +292,7 @@ class _AdminDashboardState extends State<AdminDashboard> {
                           const SizedBox(width: 16),
                           Expanded(
                             child: Column(
-                              crossAxisAlignment:
-                                  CrossAxisAlignment.start,
+                              crossAxisAlignment: CrossAxisAlignment.start,
                               children: [
                                 const Text('System Administrator',
                                     style: TextStyle(
@@ -312,19 +330,29 @@ class _AdminDashboardState extends State<AdminDashboard> {
                   ),
                 ),
 
-                // ── Stats ─────────────────────────────────────────
+                // ── Stats (now tappable) ──────────────────────────
                 SliverToBoxAdapter(
                   child: Padding(
                     padding: const EdgeInsets.fromLTRB(24, 24, 24, 0),
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                        const Text('Overview',
-                            style: TextStyle(
-                              color: Colors.white,
-                              fontSize: 16,
-                              fontWeight: FontWeight.w700,
-                            )),
+                        Row(
+                          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                          children: [
+                            const Text('Overview',
+                                style: TextStyle(
+                                  color: Colors.white,
+                                  fontSize: 16,
+                                  fontWeight: FontWeight.w700,
+                                )),
+                            Text('Tap to manage',
+                                style: TextStyle(
+                                  color: Colors.white.withOpacity(0.35),
+                                  fontSize: 11,
+                                )),
+                          ],
+                        ),
                         const SizedBox(height: 14),
                         _loading
                             ? const Center(
@@ -335,32 +363,6 @@ class _AdminDashboardState extends State<AdminDashboard> {
                                   final cardWidth =
                                       (constraints.maxWidth - 14) / 2;
                                   final cardHeight = cardWidth * 0.72;
-                                  final statItems = [
-                                    {
-                                      'label': 'Professors',
-                                      'value': '${_stats['professors']}',
-                                      'icon': Icons.school_rounded,
-                                      'color': const Color(0xFF00D4FF),
-                                    },
-                                    {
-                                      'label': 'Subjects',
-                                      'value': '${_stats['subjects']}',
-                                      'icon': Icons.menu_book_rounded,
-                                      'color': const Color(0xFF00E676),
-                                    },
-                                    {
-                                      'label': 'Sections',
-                                      'value': '${_stats['sections']}',
-                                      'icon': Icons.groups_rounded,
-                                      'color': const Color(0xFFFFB800),
-                                    },
-                                    {
-                                      'label': 'Students',
-                                      'value': '${_stats['students']}',
-                                      'icon': Icons.person_rounded,
-                                      'color': const Color(0xFFB06EFF),
-                                    },
-                                  ];
                                   return GridView.builder(
                                     shrinkWrap: true,
                                     physics:
@@ -380,6 +382,8 @@ class _AdminDashboardState extends State<AdminDashboard> {
                                         value: item['value'] as String,
                                         icon: item['icon'] as IconData,
                                         color: item['color'] as Color,
+                                        onTap: () => _goTo(
+                                            item['screen'] as Widget),
                                       );
                                     },
                                   );
@@ -393,8 +397,7 @@ class _AdminDashboardState extends State<AdminDashboard> {
                 // ── Quick Actions ─────────────────────────────────
                 SliverToBoxAdapter(
                   child: Padding(
-                    padding:
-                        const EdgeInsets.fromLTRB(24, 28, 24, 0),
+                    padding: const EdgeInsets.fromLTRB(24, 28, 24, 0),
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
@@ -410,12 +413,7 @@ class _AdminDashboardState extends State<AdminDashboard> {
                           color: const Color(0xFF00D4FF),
                           title: 'Professors',
                           subtitle: 'Add, edit, assign subjects',
-                          onTap: () => Navigator.push(
-                            context,
-                            MaterialPageRoute(
-                                builder: (_) =>
-                                    const ManageProfessors()),
-                          ).then((_) => _loadStats()),
+                          onTap: () => _goTo(const ManageProfessors()),
                         ),
                         const SizedBox(height: 12),
                         _MenuTile(
@@ -423,12 +421,7 @@ class _AdminDashboardState extends State<AdminDashboard> {
                           color: const Color(0xFF00E676),
                           title: 'Subjects',
                           subtitle: 'Create and manage subjects',
-                          onTap: () => Navigator.push(
-                            context,
-                            MaterialPageRoute(
-                                builder: (_) =>
-                                    const ManageSubjects()),
-                          ).then((_) => _loadStats()),
+                          onTap: () => _goTo(const ManageSubjects()),
                         ),
                         const SizedBox(height: 12),
                         _MenuTile(
@@ -436,26 +429,15 @@ class _AdminDashboardState extends State<AdminDashboard> {
                           color: const Color(0xFFFFB800),
                           title: 'Sections',
                           subtitle: 'Create sections, assign subjects',
-                          onTap: () => Navigator.push(
-                            context,
-                            MaterialPageRoute(
-                                builder: (_) =>
-                                    const ManageSections()),
-                          ).then((_) => _loadStats()),
+                          onTap: () => _goTo(const ManageSections()),
                         ),
                         const SizedBox(height: 12),
                         _MenuTile(
                           icon: Icons.face_retouching_natural_rounded,
                           color: const Color(0xFFB06EFF),
                           title: 'Students',
-                          subtitle:
-                              'Register students & face records',
-                          onTap: () => Navigator.push(
-                            context,
-                            MaterialPageRoute(
-                                builder: (_) =>
-                                    const ManageStudents()),
-                          ).then((_) => _loadStats()),
+                          subtitle: 'Register students & face records',
+                          onTap: () => _goTo(const ManageStudents()),
                         ),
                         const SizedBox(height: 12),
                         _MenuTile(
@@ -476,8 +458,7 @@ class _AdminDashboardState extends State<AdminDashboard> {
                   ),
                 ),
 
-                const SliverToBoxAdapter(
-                    child: SizedBox(height: 40)),
+                const SliverToBoxAdapter(child: SizedBox(height: 40)),
               ],
             ),
           ),
@@ -493,46 +474,63 @@ class _StatCard extends StatelessWidget {
   final String label, value;
   final IconData icon;
   final Color color;
-  const _StatCard({required this.label, required this.value,
-      required this.icon, required this.color});
+  final VoidCallback onTap; // ← new
+  const _StatCard({
+    required this.label,
+    required this.value,
+    required this.icon,
+    required this.color,
+    required this.onTap,
+  });
 
   @override
   Widget build(BuildContext context) {
-    return Container(
-      padding: const EdgeInsets.all(14),
-      decoration: BoxDecoration(
-        color: const Color(0xFF111827),
-        borderRadius: BorderRadius.circular(16),
-        border: Border.all(color: const Color(0xFF1E2D45)),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        mainAxisAlignment: MainAxisAlignment.spaceBetween,
-        children: [
-          Icon(icon, color: color, size: 22),
-          Flexible(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              mainAxisSize: MainAxisSize.min,
+    return GestureDetector(
+      onTap: onTap,
+      child: Container(
+        padding: const EdgeInsets.all(14),
+        decoration: BoxDecoration(
+          color: const Color(0xFF111827),
+          borderRadius: BorderRadius.circular(16),
+          border: Border.all(color: const Color(0xFF1E2D45)),
+        ),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+          children: [
+            Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
               children: [
-                FittedBox(
-                  fit: BoxFit.scaleDown,
-                  alignment: Alignment.centerLeft,
-                  child: Text(value,
-                      style: TextStyle(
-                          color: color,
-                          fontSize: 26,
-                          fontWeight: FontWeight.w800)),
-                ),
-                Text(label,
-                    style: const TextStyle(
-                        color: Color(0xFF8B9DC3),
-                        fontSize: 11,
-                        fontWeight: FontWeight.w500)),
+                Icon(icon, color: color, size: 22),
+                // Small arrow hint so users know it's tappable
+                Icon(Icons.arrow_forward_ios_rounded,
+                    color: color.withOpacity(0.45), size: 11),
               ],
             ),
-          ),
-        ],
+            Flexible(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  FittedBox(
+                    fit: BoxFit.scaleDown,
+                    alignment: Alignment.centerLeft,
+                    child: Text(value,
+                        style: TextStyle(
+                            color: color,
+                            fontSize: 26,
+                            fontWeight: FontWeight.w800)),
+                  ),
+                  Text(label,
+                      style: const TextStyle(
+                          color: Color(0xFF8B9DC3),
+                          fontSize: 11,
+                          fontWeight: FontWeight.w500)),
+                ],
+              ),
+            ),
+          ],
+        ),
       ),
     );
   }
@@ -543,9 +541,13 @@ class _MenuTile extends StatelessWidget {
   final Color color;
   final String title, subtitle;
   final VoidCallback onTap;
-  const _MenuTile({required this.icon, required this.color,
-      required this.title, required this.subtitle,
-      required this.onTap});
+  const _MenuTile({
+    required this.icon,
+    required this.color,
+    required this.title,
+    required this.subtitle,
+    required this.onTap,
+  });
 
   @override
   Widget build(BuildContext context) {
@@ -573,13 +575,15 @@ class _MenuTile extends StatelessWidget {
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  Text(title, style: const TextStyle(
-                      color: Colors.white,
-                      fontWeight: FontWeight.w700,
-                      fontSize: 15)),
+                  Text(title,
+                      style: const TextStyle(
+                          color: Colors.white,
+                          fontWeight: FontWeight.w700,
+                          fontSize: 15)),
                   const SizedBox(height: 2),
-                  Text(subtitle, style: const TextStyle(
-                      color: Color(0xFF8B9DC3), fontSize: 12)),
+                  Text(subtitle,
+                      style: const TextStyle(
+                          color: Color(0xFF8B9DC3), fontSize: 12)),
                 ],
               ),
             ),

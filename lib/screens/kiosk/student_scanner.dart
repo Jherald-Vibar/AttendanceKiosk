@@ -19,6 +19,19 @@ enum _AttendanceResult {
   noTimeInYet,
 }
 
+// ── Liveness state machine ────────────────────────────────────────────────────
+enum _LivenessState {
+  idle,        // waiting to start
+  waiting,     // face detected, prompting user to blink
+  blinkDone,   // blink confirmed → proceed to scan
+  failed,      // timed out without blink
+}
+
+// ── Liveness configuration ────────────────────────────────────────────────────
+const double _eyeOpenThreshold   = 0.7;  
+const double _eyeClosedThreshold = 0.2;  
+const Duration _blinkTimeout     = Duration(seconds: 6); 
+
 class StudentScanner extends StatefulWidget {
   final int subjectSectionId;
   final String sectionName;
@@ -58,10 +71,16 @@ class _StudentScannerState extends State<StudentScanner> {
   int _noFaceCountdown = 0;
   static const int _noFaceTimeoutSecs = 60;
 
+  // ── Liveness detection state ──────────────────────────────────────
+  _LivenessState _livenessState = _LivenessState.idle;
+  Timer? _blinkTimeoutTimer;
+  int _blinkCountdown = 0;
+  bool _eyesWereOpen = false; // tracks "open → closed" transition
+
   final FaceDetector _faceDetector = FaceDetector(
     options: FaceDetectorOptions(
       enableContours: false,
-      enableClassification: false,
+      enableClassification: true,   // ← REQUIRED for eye-open probability
       enableTracking: false,
       performanceMode: FaceDetectorMode.fast,
     ),
@@ -143,21 +162,27 @@ class _StudentScannerState extends State<StudentScanner> {
         if (mounted) setState(() => _faceDetected = detected);
 
         if (detected) {
-          // Face appeared — cancel any no-face end timer
           _cancelNoFaceTimer();
           _faceFirstSeenAt ??= DateTime.now();
 
-          final heldLongEnough = DateTime.now()
-              .difference(_faceFirstSeenAt!) >= _autoScanDelay;
+          final face = faces.first;
 
-          if (heldLongEnough && _autoScanReady && !_isProcessing && _dbLoaded) {
-            _triggerAutoScan();
+          // ── Liveness: process blink ────────────────────────────
+          _processLiveness(face);
+
+          // ── Auto-scan: only fire after liveness passes ─────────
+          if (_livenessState == _LivenessState.blinkDone) {
+            final heldLongEnough = DateTime.now()
+                .difference(_faceFirstSeenAt!) >= _autoScanDelay;
+            if (heldLongEnough && _autoScanReady && !_isProcessing && _dbLoaded) {
+              _triggerAutoScan();
+            }
           }
         } else {
-          // No face — reset hold timer
           _faceFirstSeenAt = null;
+          // Reset liveness when face disappears
+          _resetLiveness();
 
-          // Start no-face countdown only in Time Out mode
           if (!_isTimeIn && !_isProcessing) {
             _startNoFaceTimer();
           }
@@ -167,14 +192,104 @@ class _StudentScannerState extends State<StudentScanner> {
     _isDetecting = false;
   }
 
-  // ── No-face auto-end timer ────────────────────────────────────────
+  // ── Liveness helpers ──────────────────────────────────────────────
 
-  /// Starts the countdown only if not already running.
+  /// Called every frame when a face is present.
+  void _processLiveness(Face face) {
+    if (_livenessState == _LivenessState.blinkDone) return; // already passed
+    if (_livenessState == _LivenessState.failed) return;    // wait for reset
+
+    final leftEye  = face.leftEyeOpenProbability;
+    final rightEye = face.rightEyeOpenProbability;
+
+    // Can't read eye probabilities (bad angle / too far) — skip frame
+    if (leftEye == null || rightEye == null) return;
+
+    final avgOpen = (leftEye + rightEye) / 2.0;
+
+    if (_livenessState == _LivenessState.idle) {
+      // Face just appeared — start the blink challenge
+      _startBlinkChallenge();
+      return;
+    }
+
+    if (_livenessState == _LivenessState.waiting) {
+      if (avgOpen >= _eyeOpenThreshold) {
+        // Eyes clearly open — mark so we can detect the blink
+        _eyesWereOpen = true;
+      } else if (_eyesWereOpen && avgOpen <= _eyeClosedThreshold) {
+        // Eyes were open and are now closed → BLINK DETECTED 🎉
+        _onBlinkDetected();
+      }
+    }
+  }
+
+  void _startBlinkChallenge() {
+    if (!mounted) return;
+    setState(() {
+      _livenessState  = _LivenessState.waiting;
+      _eyesWereOpen   = false;
+      _blinkCountdown = _blinkTimeout.inSeconds;
+    });
+
+    _blinkTimeoutTimer?.cancel();
+    _blinkTimeoutTimer = Timer.periodic(const Duration(seconds: 1), (t) {
+      if (!mounted) { t.cancel(); return; }
+      final remaining = _blinkCountdown - 1;
+      if (remaining <= 0) {
+        t.cancel();
+        _blinkTimeoutTimer = null;
+        _onBlinkTimeout();
+      } else {
+        setState(() => _blinkCountdown = remaining);
+      }
+    });
+  }
+
+  void _onBlinkDetected() {
+    _blinkTimeoutTimer?.cancel();
+    _blinkTimeoutTimer = null;
+    if (!mounted) return;
+    setState(() {
+      _livenessState  = _LivenessState.blinkDone;
+      _blinkCountdown = 0;
+      // Reset face-hold timer so the 2-second delay starts fresh after blink
+      _faceFirstSeenAt = DateTime.now();
+    });
+  }
+
+  void _onBlinkTimeout() {
+    if (!mounted) return;
+    setState(() {
+      _livenessState  = _LivenessState.failed;
+      _blinkCountdown = 0;
+      _eyesWereOpen   = false;
+    });
+    _showMessage('Liveness check failed — please try again.');
+    // Auto-reset after a short pause so the user can retry
+    Future.delayed(const Duration(seconds: 2), () {
+      if (mounted) setState(() => _livenessState = _LivenessState.idle);
+    });
+  }
+
+  void _resetLiveness() {
+    _blinkTimeoutTimer?.cancel();
+    _blinkTimeoutTimer = null;
+    if (!mounted) return;
+    if (_livenessState != _LivenessState.idle) {
+      setState(() {
+        _livenessState  = _LivenessState.idle;
+        _blinkCountdown = 0;
+        _eyesWereOpen   = false;
+      });
+    }
+  }
+
+  // ── No-face auto-end timer ────────────────────────────────────────
   void _startNoFaceTimer() {
-    if (_noFaceEndTimer != null) return; // already ticking
+    if (_noFaceEndTimer != null) return;
     if (mounted) setState(() => _noFaceCountdown = _noFaceTimeoutSecs);
 
-    // Tick every second to update the countdown UI
     _noFaceEndTimer = Timer.periodic(const Duration(seconds: 1), (t) {
       if (!mounted) { t.cancel(); return; }
       final remaining = _noFaceCountdown - 1;
@@ -188,7 +303,6 @@ class _StudentScannerState extends State<StudentScanner> {
     });
   }
 
-  /// Cancels the countdown (called when a face is detected again).
   void _cancelNoFaceTimer() {
     if (_noFaceEndTimer == null) return;
     _noFaceEndTimer?.cancel();
@@ -196,7 +310,6 @@ class _StudentScannerState extends State<StudentScanner> {
     if (mounted) setState(() => _noFaceCountdown = 0);
   }
 
-  /// Fires when countdown reaches zero — navigates to KioskDashboard.
   void _autoEndClass() {
     if (!mounted) return;
     Navigator.of(context).pushAndRemoveUntil(
@@ -214,6 +327,8 @@ class _StudentScannerState extends State<StudentScanner> {
 
   void _startCooldown() {
     _faceFirstSeenAt = null;
+    // Reset liveness so the next person must blink again
+    _resetLiveness();
     _autoScanTimer?.cancel();
     _autoScanTimer = Timer(_autoScanCooldown, () {
       if (mounted) setState(() => _autoScanReady = true);
@@ -335,8 +450,8 @@ class _StudentScannerState extends State<StudentScanner> {
 
   // ── Professor verify sheet ────────────────────────────────────────
   Future<void> _showProfessorVerifySheet({required bool isEndClass}) async {
-    // Pause no-face timer while professor sheet is open
     _cancelNoFaceTimer();
+    _resetLiveness();
     await _stopStream();
     _autoScanTimer?.cancel();
     if (mounted) setState(() { _faceDetected = false; _autoScanReady = false; });
@@ -379,8 +494,6 @@ class _StudentScannerState extends State<StudentScanner> {
 
     await _reinitializeCameraAfterSheet();
     if (mounted) setState(() => _autoScanReady = true);
-    // If we're now in Time Out mode, the no-face timer starts naturally
-    // via _processCameraImage when no face is seen.
   }
 
   Future<void> _reinitializeCameraAfterSheet() async {
@@ -590,6 +703,7 @@ class _StudentScannerState extends State<StudentScanner> {
   void dispose() {
     _autoScanTimer?.cancel();
     _noFaceEndTimer?.cancel();
+    _blinkTimeoutTimer?.cancel();
     _stopStream();
     _cameraController?.dispose();
     _faceDetector.close();
@@ -603,16 +717,32 @@ class _StudentScannerState extends State<StudentScanner> {
     final frameHeight = screenHeight * 0.30;
     final frameWidth = frameHeight * 0.875;
 
-    final bool isWarmingUp = _faceDetected &&
+    // Derived booleans for UI
+    final bool livenessWaiting  = _livenessState == _LivenessState.waiting;
+    final bool livenessPassed   = _livenessState == _LivenessState.blinkDone;
+    final bool livenessFailed   = _livenessState == _LivenessState.failed;
+
+    final bool isWarmingUp = livenessPassed &&
+        _faceDetected &&
         !_isProcessing &&
         _autoScanReady &&
         _faceFirstSeenAt != null;
 
-    // Show countdown only in Time Out mode while no face is visible
     final bool showNoFaceCountdown = !_isTimeIn &&
         !_isProcessing &&
         !_faceDetected &&
         _noFaceCountdown > 0;
+
+    // Frame border colour
+    final Color frameBorderColor;
+    if (_isProcessing)          frameBorderColor = Colors.white;
+    else if (showNoFaceCountdown) frameBorderColor = Colors.redAccent;
+    else if (livenessFailed)    frameBorderColor = Colors.redAccent;
+    else if (livenessWaiting)   frameBorderColor = Colors.amber;
+    else if (livenessPassed && !_autoScanReady) frameBorderColor = Colors.blue;
+    else if (livenessPassed)    frameBorderColor = Colors.green;
+    else if (_faceDetected)     frameBorderColor = Colors.amber; // face seen, idle (about to start)
+    else                        frameBorderColor = Colors.white;
 
     return PopScope(
       canPop: false,
@@ -794,109 +924,102 @@ class _StudentScannerState extends State<StudentScanner> {
                           width: frameWidth, height: frameHeight,
                           decoration: BoxDecoration(
                             border: Border.all(
-                                color: _isProcessing
-                                    ? Colors.white
-                                    : showNoFaceCountdown
-                                        ? Colors.redAccent
-                                        : !_autoScanReady
-                                            ? Colors.blue
-                                            : _faceDetected
-                                                ? Colors.green
-                                                : Colors.white,
+                                color: frameBorderColor,
                                 width: 3),
                             borderRadius: BorderRadius.circular(16),
                           ),
                           child: Stack(children: [
-                            Positioned(
-                                top: 0, left: 0,
-                                child: _buildCornerBracket(
-                                    topLeft: true,
-                                    color: showNoFaceCountdown
-                                        ? Colors.redAccent
-                                        : _faceDetected
-                                            ? Colors.green
-                                            : Colors.white)),
-                            Positioned(
-                                top: 0, right: 0,
-                                child: _buildCornerBracket(
-                                    topRight: true,
-                                    color: showNoFaceCountdown
-                                        ? Colors.redAccent
-                                        : _faceDetected
-                                            ? Colors.green
-                                            : Colors.white)),
-                            Positioned(
-                                bottom: 0, left: 0,
-                                child: _buildCornerBracket(
-                                    bottomLeft: true,
-                                    color: showNoFaceCountdown
-                                        ? Colors.redAccent
-                                        : _faceDetected
-                                            ? Colors.green
-                                            : Colors.white)),
-                            Positioned(
-                                bottom: 0, right: 0,
-                                child: _buildCornerBracket(
-                                    bottomRight: true,
-                                    color: showNoFaceCountdown
-                                        ? Colors.redAccent
-                                        : _faceDetected
-                                            ? Colors.green
-                                            : Colors.white)),
+                            Positioned(top: 0, left: 0,
+                                child: _buildCornerBracket(topLeft: true, color: frameBorderColor)),
+                            Positioned(top: 0, right: 0,
+                                child: _buildCornerBracket(topRight: true, color: frameBorderColor)),
+                            Positioned(bottom: 0, left: 0,
+                                child: _buildCornerBracket(bottomLeft: true, color: frameBorderColor)),
+                            Positioned(bottom: 0, right: 0,
+                                child: _buildCornerBracket(bottomRight: true, color: frameBorderColor)),
 
-                            // No-face countdown overlay (Time Out mode)
+                            // ── No-face countdown overlay ──────────
                             if (showNoFaceCountdown)
                               Center(
-                                child: Column(
-                                  mainAxisSize: MainAxisSize.min,
-                                  children: [
-                                    Text(
-                                      '$_noFaceCountdown',
+                                child: Column(mainAxisSize: MainAxisSize.min, children: [
+                                  Text('$_noFaceCountdown',
                                       style: const TextStyle(
-                                        color: Colors.redAccent,
-                                        fontSize: 48,
-                                        fontWeight: FontWeight.w900,
-                                      ),
-                                    ),
-                                    const Text(
-                                      'Ending class...',
+                                          color: Colors.redAccent,
+                                          fontSize: 48,
+                                          fontWeight: FontWeight.w900)),
+                                  const Text('Ending class...',
                                       style: TextStyle(
                                           color: Colors.redAccent,
                                           fontSize: 12,
-                                          fontWeight: FontWeight.w600),
-                                    ),
-                                  ],
-                                ),
+                                          fontWeight: FontWeight.w600)),
+                                ]),
                               ),
 
-                            // Warming up indicator
+                            // ── Liveness: blink challenge ──────────
+                            if (livenessWaiting && !showNoFaceCountdown)
+                              Center(
+                                child: Column(mainAxisSize: MainAxisSize.min, children: [
+                                  const Icon(Icons.remove_red_eye_outlined,
+                                      color: Colors.amber, size: 36),
+                                  const SizedBox(height: 6),
+                                  const Text('Please BLINK',
+                                      style: TextStyle(
+                                          color: Colors.amber,
+                                          fontSize: 15,
+                                          fontWeight: FontWeight.w800)),
+                                  const SizedBox(height: 4),
+                                  Text('$_blinkCountdown s',
+                                      style: const TextStyle(
+                                          color: Colors.amber,
+                                          fontSize: 12,
+                                          fontWeight: FontWeight.w600)),
+                                ]),
+                              ),
+
+                            // ── Liveness: failed ───────────────────
+                            if (livenessFailed && !showNoFaceCountdown)
+                              Center(
+                                child: Column(mainAxisSize: MainAxisSize.min, children: [
+                                  const Icon(Icons.gpp_bad_rounded,
+                                      color: Colors.redAccent, size: 36),
+                                  const SizedBox(height: 6),
+                                  const Text('Liveness Failed',
+                                      style: TextStyle(
+                                          color: Colors.redAccent,
+                                          fontSize: 13,
+                                          fontWeight: FontWeight.w700)),
+                                  const SizedBox(height: 2),
+                                  const Text('Move away & try again',
+                                      style: TextStyle(
+                                          color: Colors.redAccent,
+                                          fontSize: 11)),
+                                ]),
+                              ),
+
+                            // ── Liveness passed → warming up ───────
                             if (isWarmingUp && !showNoFaceCountdown)
                               const Center(
-                                child: Column(
-                                  mainAxisSize: MainAxisSize.min,
-                                  children: [
-                                    Icon(Icons.face_unlock_outlined,
-                                        color: Colors.green, size: 36),
-                                    SizedBox(height: 6),
-                                    Text('Hold still...',
-                                        style: TextStyle(
-                                            color: Colors.green,
-                                            fontSize: 13,
-                                            fontWeight: FontWeight.w600)),
-                                  ],
-                                ),
+                                child: Column(mainAxisSize: MainAxisSize.min, children: [
+                                  Icon(Icons.face_unlock_outlined,
+                                      color: Colors.green, size: 36),
+                                  SizedBox(height: 6),
+                                  Text('Hold still...',
+                                      style: TextStyle(
+                                          color: Colors.green,
+                                          fontSize: 13,
+                                          fontWeight: FontWeight.w600)),
+                                ]),
                               ),
 
-                            // Cooldown indicator
-                            if (!_autoScanReady && !_isProcessing && !showNoFaceCountdown)
+                            // ── Cooldown indicator ─────────────────
+                            if (!_autoScanReady && !_isProcessing && !showNoFaceCountdown && livenessPassed)
                               Center(
                                 child: Container(
                                   padding: const EdgeInsets.symmetric(
                                       horizontal: 12, vertical: 6),
                                   decoration: BoxDecoration(
-                                    color: Colors.black54,
-                                    borderRadius: BorderRadius.circular(8),
-                                  ),
+                                      color: Colors.black54,
+                                      borderRadius: BorderRadius.circular(8)),
                                   child: const Text('Please wait...',
                                       style: TextStyle(
                                           color: Colors.blue,
@@ -908,48 +1031,56 @@ class _StudentScannerState extends State<StudentScanner> {
                         ),
                         const SizedBox(height: 12),
 
-                        // Status text
+                        // ── Status text ────────────────────────────
                         Text(
                           _isProcessing
                               ? 'Processing...'
                               : showNoFaceCountdown
                                   ? 'No face detected — class ending in $_noFaceCountdown s'
-                                  : !_autoScanReady
-                                      ? 'Next scan ready soon...'
-                                      : _faceDetected
-                                          ? 'Face detected — scanning automatically'
-                                          : 'Find a good lighting spot',
+                                  : livenessFailed
+                                      ? 'Liveness check failed — move away and retry'
+                                      : livenessWaiting
+                                          ? 'Blink to prove you\'re real ($_blinkCountdown s)'
+                                          : livenessPassed && !_autoScanReady
+                                              ? 'Next scan ready soon...'
+                                              : livenessPassed
+                                                  ? 'Liveness ✓ — scanning automatically'
+                                                  : _faceDetected
+                                                      ? 'Face detected — starting liveness check...'
+                                                      : 'Find a good lighting spot',
                           style: TextStyle(
                             color: _isProcessing
                                 ? Colors.white
-                                : showNoFaceCountdown
+                                : showNoFaceCountdown || livenessFailed
                                     ? Colors.redAccent
-                                    : !_autoScanReady
-                                        ? Colors.blue
-                                        : _faceDetected
-                                            ? Colors.green
-                                            : Colors.white.withOpacity(0.8),
+                                    : livenessWaiting
+                                        ? Colors.amber
+                                        : livenessPassed && !_autoScanReady
+                                            ? Colors.blue
+                                            : livenessPassed || _faceDetected
+                                                ? Colors.green
+                                                : Colors.white.withOpacity(0.8),
                             fontSize: 14,
-                            fontWeight: (showNoFaceCountdown ||
-                                    _faceDetected ||
+                            fontWeight: (showNoFaceCountdown || livenessFailed ||
+                                    livenessWaiting || livenessPassed ||
                                     !_autoScanReady)
                                 ? FontWeight.bold
                                 : FontWeight.normal,
                           ),
+                          textAlign: TextAlign.center,
                         ),
 
                         const SizedBox(height: 6),
 
                         if (!_isProcessing && !showNoFaceCountdown)
                           Text(
-                            'Auto-scans after ${_autoScanDelay.inSeconds}s • ${_autoScanCooldown.inSeconds}s cooldown',
+                            'Blink to confirm liveness • ${_autoScanCooldown.inSeconds}s cooldown',
                             style: TextStyle(
                               color: Colors.white.withOpacity(0.35),
                               fontSize: 11,
                             ),
                           ),
 
-                        // Hint shown in Time Out mode while waiting
                         if (!_isProcessing && !_isTimeIn && !_faceDetected && !showNoFaceCountdown)
                           Padding(
                             padding: const EdgeInsets.only(top: 4),
@@ -965,7 +1096,7 @@ class _StudentScannerState extends State<StudentScanner> {
                     ),
                   ),
 
-                  // ── Bottom — End Class only ───────────────────
+                  // ── Bottom — End Class ───────────────────────────
                   Padding(
                     padding: const EdgeInsets.fromLTRB(20, 0, 20, 20),
                     child: SizedBox(
@@ -1039,7 +1170,7 @@ class _StudentScannerState extends State<StudentScanner> {
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
-// Professor Verify Bottom Sheet  (unchanged)
+// Professor Verify Bottom Sheet — with blink liveness
 // ══════════════════════════════════════════════════════════════════════════════
 
 class _ProfessorVerifySheet extends StatefulWidget {
@@ -1068,8 +1199,18 @@ class _ProfessorVerifySheetState extends State<_ProfessorVerifySheet> {
   bool _isStreaming = false;
   EnrolledFace? _professorFace;
 
+  // ── Liveness state ────────────────────────────────────────────────
+  _LivenessState _livenessState = _LivenessState.idle;
+  Timer? _blinkTimeoutTimer;
+  int _blinkCountdown = 0;
+  bool _eyesWereOpen = false;
+
   final FaceDetector _detector = FaceDetector(
-      options: FaceDetectorOptions(performanceMode: FaceDetectorMode.fast));
+    options: FaceDetectorOptions(
+      enableClassification: true,   // ← needed for eye-open probability
+      performanceMode: FaceDetectorMode.fast,
+    ),
+  );
 
   @override
   void initState() {
@@ -1120,12 +1261,99 @@ class _ProfessorVerifySheetState extends State<_ProfessorVerifySheet> {
         final inp = _toInput(image);
         if (inp != null) {
           final faces = await _detector.processImage(inp);
-          if (mounted) setState(() => _faceDetected = faces.isNotEmpty);
+          final detected = faces.isNotEmpty;
+          if (mounted) setState(() => _faceDetected = detected);
+
+          if (detected) {
+            _processLiveness(faces.first);
+          } else {
+            _resetLiveness();
+          }
         }
       } catch (_) {}
       _isDetecting = false;
     });
     _isStreaming = true;
+  }
+
+  // ── Liveness logic (mirrors StudentScanner) ───────────────────────
+  void _processLiveness(Face face) {
+    if (_livenessState == _LivenessState.blinkDone) return;
+    if (_livenessState == _LivenessState.failed) return;
+
+    final leftEye  = face.leftEyeOpenProbability;
+    final rightEye = face.rightEyeOpenProbability;
+    if (leftEye == null || rightEye == null) return;
+
+    final avgOpen = (leftEye + rightEye) / 2.0;
+
+    if (_livenessState == _LivenessState.idle) {
+      _startBlinkChallenge();
+      return;
+    }
+
+    if (_livenessState == _LivenessState.waiting) {
+      if (avgOpen >= _eyeOpenThreshold) {
+        _eyesWereOpen = true;
+      } else if (_eyesWereOpen && avgOpen <= _eyeClosedThreshold) {
+        _onBlinkDetected();
+      }
+    }
+  }
+
+  void _startBlinkChallenge() {
+    if (!mounted) return;
+    setState(() {
+      _livenessState  = _LivenessState.waiting;
+      _eyesWereOpen   = false;
+      _blinkCountdown = _blinkTimeout.inSeconds;
+    });
+
+    _blinkTimeoutTimer?.cancel();
+    _blinkTimeoutTimer = Timer.periodic(const Duration(seconds: 1), (t) {
+      if (!mounted) { t.cancel(); return; }
+      final remaining = _blinkCountdown - 1;
+      if (remaining <= 0) {
+        t.cancel();
+        _blinkTimeoutTimer = null;
+        if (mounted) {
+          setState(() {
+            _livenessState  = _LivenessState.failed;
+            _blinkCountdown = 0;
+            _eyesWereOpen   = false;
+          });
+          _showErr('Liveness check failed. Move away and try again.');
+          Future.delayed(const Duration(seconds: 2), () {
+            if (mounted) setState(() => _livenessState = _LivenessState.idle);
+          });
+        }
+      } else {
+        setState(() => _blinkCountdown = remaining);
+      }
+    });
+  }
+
+  void _onBlinkDetected() {
+    _blinkTimeoutTimer?.cancel();
+    _blinkTimeoutTimer = null;
+    if (mounted) {
+      setState(() {
+        _livenessState  = _LivenessState.blinkDone;
+        _blinkCountdown = 0;
+      });
+    }
+  }
+
+  void _resetLiveness() {
+    _blinkTimeoutTimer?.cancel();
+    _blinkTimeoutTimer = null;
+    if (mounted && _livenessState != _LivenessState.idle) {
+      setState(() {
+        _livenessState  = _LivenessState.idle;
+        _blinkCountdown = 0;
+        _eyesWereOpen   = false;
+      });
+    }
   }
 
   InputImage? _toInput(CameraImage image) {
@@ -1153,12 +1381,15 @@ class _ProfessorVerifySheetState extends State<_ProfessorVerifySheet> {
 
   Future<void> _verify() async {
     if (!_faceDetected) return;
+
+    // Block verify if liveness not passed
+    if (_livenessState != _LivenessState.blinkDone) {
+      _showErr('Please complete the blink check first.');
+      return;
+    }
+
     if (_professorFace == null) {
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
-        content: Text('Professor face not enrolled. Cannot verify.'),
-        backgroundColor: Colors.red,
-        behavior: SnackBarBehavior.floating,
-      ));
+      _showErr('Professor face not enrolled. Cannot verify.');
       return;
     }
 
@@ -1210,6 +1441,7 @@ class _ProfessorVerifySheetState extends State<_ProfessorVerifySheet> {
   }
 
   Future<void> _handleCancel() async {
+    _blinkTimeoutTimer?.cancel();
     if (_isStreaming) {
       try { await _cam?.stopImageStream(); } catch (_) {}
       _isStreaming = false;
@@ -1222,6 +1454,7 @@ class _ProfessorVerifySheetState extends State<_ProfessorVerifySheet> {
   void _restartStream() {
     if (!mounted) return;
     setState(() { _isStreaming = false; _faceDetected = false; });
+    _resetLiveness();
     Future.delayed(const Duration(milliseconds: 300), _startStream);
   }
 
@@ -1236,6 +1469,7 @@ class _ProfessorVerifySheetState extends State<_ProfessorVerifySheet> {
 
   @override
   void dispose() {
+    _blinkTimeoutTimer?.cancel();
     if (_isStreaming) {
       try { _cam?.stopImageStream(); } catch (_) {}
     }
@@ -1246,6 +1480,13 @@ class _ProfessorVerifySheetState extends State<_ProfessorVerifySheet> {
 
   @override
   Widget build(BuildContext context) {
+    final livenessPassed  = _livenessState == _LivenessState.blinkDone;
+    final livenessWaiting = _livenessState == _LivenessState.waiting;
+    final livenessFailed  = _livenessState == _LivenessState.failed;
+
+    // Verify button only enabled when face visible + liveness passed
+    final canVerify = _faceDetected && livenessPassed && !_isProcessing;
+
     return Container(
       height: MediaQuery.of(context).size.height * 0.75,
       decoration: const BoxDecoration(
@@ -1281,7 +1522,7 @@ class _ProfessorVerifySheetState extends State<_ProfessorVerifySheet> {
                             color: Colors.white,
                             fontWeight: FontWeight.w700,
                             fontSize: 16)),
-                    const Text('Professor face verification required',
+                    const Text('Blink to confirm liveness, then verify',
                         style: TextStyle(
                             color: Color(0xFF8B9DC3), fontSize: 12)),
                   ]),
@@ -1294,6 +1535,7 @@ class _ProfessorVerifySheetState extends State<_ProfessorVerifySheet> {
           ]),
         ),
         const SizedBox(height: 16),
+
         Expanded(
           child: Padding(
             padding: const EdgeInsets.symmetric(horizontal: 24),
@@ -1302,25 +1544,71 @@ class _ProfessorVerifySheetState extends State<_ProfessorVerifySheet> {
               child: _camReady && _cam != null
                   ? Stack(fit: StackFit.expand, children: [
                       CameraPreview(_cam!),
-                      if (_faceDetected)
-                        const Center(
-                          child: Icon(Icons.check_circle,
-                              color: Colors.green, size: 64),
+
+                      // ── Blink challenge overlay ──────────
+                      if (livenessWaiting)
+                        Container(
+                          color: Colors.black38,
+                          child: Center(
+                            child: Column(mainAxisSize: MainAxisSize.min, children: [
+                              const Icon(Icons.remove_red_eye_outlined,
+                                  color: Colors.amber, size: 48),
+                              const SizedBox(height: 8),
+                              const Text('Please BLINK',
+                                  style: TextStyle(
+                                      color: Colors.amber,
+                                      fontSize: 18,
+                                      fontWeight: FontWeight.w800)),
+                              const SizedBox(height: 4),
+                              Text('$_blinkCountdown s remaining',
+                                  style: const TextStyle(
+                                      color: Colors.amber, fontSize: 13)),
+                            ]),
+                          ),
                         ),
+
+                      // ── Liveness failed overlay ──────────
+                      if (livenessFailed)
+                        Container(
+                          color: Colors.black54,
+                          child: const Center(
+                            child: Column(mainAxisSize: MainAxisSize.min, children: [
+                              Icon(Icons.gpp_bad_rounded,
+                                  color: Colors.redAccent, size: 48),
+                              SizedBox(height: 8),
+                              Text('Liveness Failed',
+                                  style: TextStyle(
+                                      color: Colors.redAccent,
+                                      fontSize: 16,
+                                      fontWeight: FontWeight.w800)),
+                              SizedBox(height: 4),
+                              Text('Move away & try again',
+                                  style: TextStyle(
+                                      color: Colors.redAccent, fontSize: 12)),
+                            ]),
+                          ),
+                        ),
+
+                      // ── Liveness passed check ────────────
+                      if (livenessPassed && !_isProcessing)
+                        const Positioned(
+                          top: 12, right: 12,
+                          child: Icon(Icons.verified_rounded,
+                              color: Colors.green, size: 32),
+                        ),
+
                       if (_isProcessing)
                         Container(
                           color: Colors.black54,
                           child: const Center(
-                            child: Column(
-                                mainAxisSize: MainAxisSize.min,
-                                children: [
-                                  CircularProgressIndicator(
-                                      color: Colors.white, strokeWidth: 2),
-                                  SizedBox(height: 10),
-                                  Text('Verifying professor...',
-                                      style: TextStyle(
-                                          color: Colors.white, fontSize: 13)),
-                                ]),
+                            child: Column(mainAxisSize: MainAxisSize.min, children: [
+                              CircularProgressIndicator(
+                                  color: Colors.white, strokeWidth: 2),
+                              SizedBox(height: 10),
+                              Text('Verifying professor...',
+                                  style: TextStyle(
+                                      color: Colors.white, fontSize: 13)),
+                            ]),
                           ),
                         ),
                     ])
@@ -1330,19 +1618,37 @@ class _ProfessorVerifySheetState extends State<_ProfessorVerifySheet> {
             ),
           ),
         ),
+
         Padding(
           padding: const EdgeInsets.symmetric(vertical: 12),
           child: Text(
-            _faceDetected
-                ? 'Face detected! Tap Verify.'
-                : "Position professor's face in frame",
+            _isProcessing
+                ? 'Verifying...'
+                : livenessFailed
+                    ? 'Blink check failed — move away and retry'
+                    : livenessWaiting
+                        ? 'Blink now! ($_blinkCountdown s)'
+                        : livenessPassed
+                            ? '✓ Liveness confirmed — tap Verify'
+                            : _faceDetected
+                                ? 'Starting liveness check...'
+                                : "Position professor's face in frame",
             style: TextStyle(
-              color: _faceDetected ? Colors.green : const Color(0xFF8B9DC3),
+              color: livenessFailed
+                  ? Colors.redAccent
+                  : livenessWaiting
+                      ? Colors.amber
+                      : livenessPassed
+                          ? Colors.green
+                          : const Color(0xFF8B9DC3),
               fontSize: 13,
-              fontWeight: _faceDetected ? FontWeight.w600 : FontWeight.normal,
+              fontWeight: (livenessPassed || livenessWaiting || livenessFailed)
+                  ? FontWeight.w600
+                  : FontWeight.normal,
             ),
           ),
         ),
+
         Padding(
           padding: const EdgeInsets.fromLTRB(24, 0, 24, 24),
           child: Row(children: [
@@ -1362,7 +1668,7 @@ class _ProfessorVerifySheetState extends State<_ProfessorVerifySheet> {
             const SizedBox(width: 12),
             Expanded(
               child: ElevatedButton(
-                onPressed: (_faceDetected && !_isProcessing) ? _verify : null,
+                onPressed: canVerify ? _verify : null,
                 style: ElevatedButton.styleFrom(
                   backgroundColor: Colors.orange,
                   foregroundColor: Colors.white,
