@@ -127,7 +127,6 @@ class _AdminDashboardState extends State<AdminDashboard> {
     );
   }
 
-  // ── Navigation helpers ────────────────────────────────────────────
   void _goTo(Widget screen) {
     Navigator.push(
       context,
@@ -139,8 +138,8 @@ class _AdminDashboardState extends State<AdminDashboard> {
   Widget build(BuildContext context) {
     final now = DateTime.now();
     final adminName = widget.admin['full_name'] ?? 'Admin';
+    final screenH = MediaQuery.of(context).size.height;
 
-    // Stat card definitions — each carries its destination route
     final statItems = [
       {
         'label': 'Professors',
@@ -171,6 +170,10 @@ class _AdminDashboardState extends State<AdminDashboard> {
         'screen': const ManageStudents(),
       },
     ];
+
+    // Card height: half of 55% screen height minus spacing
+    final gridHeight = screenH * 0.55;
+    final cardHeight = (gridHeight - 12) / 2;
 
     return WillPopScope(
       onWillPop: _onWillPop,
@@ -330,7 +333,7 @@ class _AdminDashboardState extends State<AdminDashboard> {
                   ),
                 ),
 
-                // ── Stats (now tappable) ──────────────────────────
+                // ── Stats (bigger cards) ──────────────────────────
                 SliverToBoxAdapter(
                   child: Padding(
                     padding: const EdgeInsets.fromLTRB(24, 24, 24, 0),
@@ -358,36 +361,30 @@ class _AdminDashboardState extends State<AdminDashboard> {
                             ? const Center(
                                 child: CircularProgressIndicator(
                                     color: Color(0xFF00D4FF)))
-                            : LayoutBuilder(
-                                builder: (context, constraints) {
-                                  final cardWidth =
-                                      (constraints.maxWidth - 14) / 2;
-                                  final cardHeight = cardWidth * 0.72;
-                                  return GridView.builder(
-                                    shrinkWrap: true,
-                                    physics:
-                                        const NeverScrollableScrollPhysics(),
-                                    gridDelegate:
-                                        SliverGridDelegateWithFixedCrossAxisCount(
-                                      crossAxisCount: 2,
-                                      crossAxisSpacing: 14,
-                                      mainAxisSpacing: 14,
-                                      mainAxisExtent: cardHeight,
-                                    ),
-                                    itemCount: statItems.length,
-                                    itemBuilder: (context, index) {
-                                      final item = statItems[index];
-                                      return _StatCard(
-                                        label: item['label'] as String,
-                                        value: item['value'] as String,
-                                        icon: item['icon'] as IconData,
-                                        color: item['color'] as Color,
-                                        onTap: () => _goTo(
-                                            item['screen'] as Widget),
-                                      );
-                                    },
-                                  );
-                                },
+                            : SizedBox(
+                                height: gridHeight,
+                                child: GridView.builder(
+                                  physics: const NeverScrollableScrollPhysics(),
+                                  gridDelegate:
+                                      SliverGridDelegateWithFixedCrossAxisCount(
+                                    crossAxisCount: 2,
+                                    crossAxisSpacing: 12,
+                                    mainAxisSpacing: 12,
+                                    mainAxisExtent: cardHeight,
+                                  ),
+                                  itemCount: statItems.length,
+                                  itemBuilder: (context, index) {
+                                    final item = statItems[index];
+                                    return _StatCard(
+                                      label: item['label'] as String,
+                                      value: item['value'] as String,
+                                      icon: item['icon'] as IconData,
+                                      color: item['color'] as Color,
+                                      onTap: () =>
+                                          _goTo(item['screen'] as Widget),
+                                    );
+                                  },
+                                ),
                               ),
                       ],
                     ),
@@ -474,7 +471,7 @@ class _StatCard extends StatelessWidget {
   final String label, value;
   final IconData icon;
   final Color color;
-  final VoidCallback onTap; // ← new
+  final VoidCallback onTap;
   const _StatCard({
     required this.label,
     required this.value,
@@ -488,10 +485,10 @@ class _StatCard extends StatelessWidget {
     return GestureDetector(
       onTap: onTap,
       child: Container(
-        padding: const EdgeInsets.all(14),
+        padding: const EdgeInsets.all(20),
         decoration: BoxDecoration(
           color: const Color(0xFF111827),
-          borderRadius: BorderRadius.circular(16),
+          borderRadius: BorderRadius.circular(20),
           border: Border.all(color: const Color(0xFF1E2D45)),
         ),
         child: Column(
@@ -501,33 +498,45 @@ class _StatCard extends StatelessWidget {
             Row(
               mainAxisAlignment: MainAxisAlignment.spaceBetween,
               children: [
-                Icon(icon, color: color, size: 22),
-                // Small arrow hint so users know it's tappable
+                Container(
+                  width: 46,
+                  height: 46,
+                  decoration: BoxDecoration(
+                    color: color.withOpacity(0.12),
+                    borderRadius: BorderRadius.circular(13),
+                  ),
+                  child: Icon(icon, color: color, size: 24),
+                ),
                 Icon(Icons.arrow_forward_ios_rounded,
-                    color: color.withOpacity(0.45), size: 11),
+                    color: color.withOpacity(0.45), size: 13),
               ],
             ),
-            Flexible(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  FittedBox(
-                    fit: BoxFit.scaleDown,
-                    alignment: Alignment.centerLeft,
-                    child: Text(value,
-                        style: TextStyle(
-                            color: color,
-                            fontSize: 26,
-                            fontWeight: FontWeight.w800)),
+            Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                FittedBox(
+                  fit: BoxFit.scaleDown,
+                  alignment: Alignment.centerLeft,
+                  child: Text(
+                    value,
+                    style: TextStyle(
+                      color: color,
+                      fontSize: 48,
+                      fontWeight: FontWeight.w800,
+                      height: 1.0,
+                    ),
                   ),
-                  Text(label,
-                      style: const TextStyle(
-                          color: Color(0xFF8B9DC3),
-                          fontSize: 11,
-                          fontWeight: FontWeight.w500)),
-                ],
-              ),
+                ),
+                const SizedBox(height: 4),
+                Text(
+                  label,
+                  style: const TextStyle(
+                    color: Color(0xFF8B9DC3),
+                    fontSize: 13,
+                    fontWeight: FontWeight.w500,
+                  ),
+                ),
+              ],
             ),
           ],
         ),
