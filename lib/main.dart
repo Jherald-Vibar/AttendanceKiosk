@@ -612,12 +612,15 @@ class _AdminScanDialogState extends State<_AdminScanDialog> {
                   ),
                   const SizedBox(height: 20),
 
-                  // ── Live Camera Preview ──────────────────────────
+                  // ── Live Camera Preview (aspect-ratio-correct) ───
                   ClipRRect(
                     borderRadius: BorderRadius.circular(16),
-                    child: SizedBox(
-                      width: double.infinity,
-                      height: 220,
+                    child: AspectRatio(
+                      // Use the camera's real aspect ratio so it never stretches.
+                      // Falls back to portrait 3:4 while camera is initialising.
+                      aspectRatio: _cameraReady && _cameraController != null
+                          ? _cameraController!.value.aspectRatio
+                          : 3 / 4,
                       child: _cameraReady && _cameraController != null
                           ? Stack(
                               fit: StackFit.expand,
