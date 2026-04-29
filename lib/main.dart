@@ -95,8 +95,7 @@ class HomePage extends StatelessWidget {
             top: 0, left: 0, right: 0,
             child: SafeArea(
               child: Padding(
-                padding: const EdgeInsets.symmetric(
-                    horizontal: 20, vertical: 12),
+                padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
                 child: Row(
                   mainAxisAlignment: MainAxisAlignment.end,
                   children: [
@@ -147,8 +146,7 @@ class HomePage extends StatelessWidget {
                 const SizedBox(height: 70),
                 ElevatedButton(
                   onPressed: () => Navigator.push(context,
-                      MaterialPageRoute(
-                          builder: (_) => const LoginScreen())),
+                      MaterialPageRoute(builder: (_) => const LoginScreen())),
                   style: ElevatedButton.styleFrom(
                     backgroundColor: Colors.black,
                     foregroundColor: Colors.white,
@@ -167,7 +165,7 @@ class HomePage extends StatelessWidget {
   }
 }
 
-// ── Admin Scan Dialog — with blink liveness ────────────────────────────────────
+// ── Admin Scan Dialog ─────────────────────────────────────────────────────────
 
 class _AdminScanDialog extends StatefulWidget {
   const _AdminScanDialog();
@@ -178,25 +176,25 @@ class _AdminScanDialog extends StatefulWidget {
 
 class _AdminScanDialogState extends State<_AdminScanDialog> {
   CameraController? _cameraController;
-  bool _cameraReady = false;
-  bool _faceDetected = false;
-  bool _isDetecting = false;
-  bool _isProcessing = false;
-  bool _isStreaming = false;
+  bool _cameraReady    = false;
+  bool _faceDetected   = false;
+  bool _isDetecting    = false;
+  bool _isProcessing   = false;
+  bool _isStreaming    = false;
 
   List<EnrolledFace> _enrolledAdmins = [];
   bool _dbLoaded = false;
 
-  // ── Liveness state ────────────────────────────────────────────────
+  // ── Liveness state ─────────────────────────────────────────────────
   _LivenessState _livenessState = _LivenessState.idle;
-  Timer? _blinkTimeoutTimer;
-  int _blinkCountdown = 0;
-  bool _eyesWereOpen = false;
+  Timer?  _blinkTimeoutTimer;
+  int     _blinkCountdown = 0;
+  bool    _eyesWereOpen   = false;
 
   final FaceDetector _faceDetector = FaceDetector(
     options: FaceDetectorOptions(
       enableContours: false,
-      enableClassification: true,   // ← required for eye-open probability
+      enableClassification: true,
       enableTracking: false,
       performanceMode: FaceDetectorMode.fast,
     ),
@@ -227,10 +225,7 @@ class _AdminScanDialogState extends State<_AdminScanDialog> {
       }
     }
     if (mounted) {
-      setState(() {
-        _enrolledAdmins = admins;
-        _dbLoaded = true;
-      });
+      setState(() { _enrolledAdmins = admins; _dbLoaded = true; });
     }
   }
 
@@ -266,15 +261,10 @@ class _AdminScanDialogState extends State<_AdminScanDialog> {
       try {
         final inputImage = _toInputImage(image);
         if (inputImage != null) {
-          final faces = await _faceDetector.processImage(inputImage);
+          final faces   = await _faceDetector.processImage(inputImage);
           final detected = faces.isNotEmpty;
           if (mounted) setState(() => _faceDetected = detected);
-
-          if (detected) {
-            _processLiveness(faces.first);
-          } else {
-            _resetLiveness();
-          }
+          if (detected) { _processLiveness(faces.first); } else { _resetLiveness(); }
         }
       } catch (_) {}
       _isDetecting = false;
@@ -282,11 +272,11 @@ class _AdminScanDialogState extends State<_AdminScanDialog> {
     _isStreaming = true;
   }
 
-  // ── Liveness helpers ──────────────────────────────────────────────
+  // ── Liveness ───────────────────────────────────────────────────────
 
   void _processLiveness(Face face) {
     if (_livenessState == _LivenessState.blinkDone) return;
-    if (_livenessState == _LivenessState.failed) return;
+    if (_livenessState == _LivenessState.failed)    return;
 
     final leftEye  = face.leftEyeOpenProbability;
     final rightEye = face.rightEyeOpenProbability;
@@ -294,10 +284,7 @@ class _AdminScanDialogState extends State<_AdminScanDialog> {
 
     final avgOpen = (leftEye + rightEye) / 2.0;
 
-    if (_livenessState == _LivenessState.idle) {
-      _startBlinkChallenge();
-      return;
-    }
+    if (_livenessState == _LivenessState.idle) { _startBlinkChallenge(); return; }
 
     if (_livenessState == _LivenessState.waiting) {
       if (avgOpen >= _eyeOpenThreshold) {
@@ -315,7 +302,6 @@ class _AdminScanDialogState extends State<_AdminScanDialog> {
       _eyesWereOpen   = false;
       _blinkCountdown = _blinkTimeout.inSeconds;
     });
-
     _blinkTimeoutTimer?.cancel();
     _blinkTimeoutTimer = Timer.periodic(const Duration(seconds: 1), (t) {
       if (!mounted) { t.cancel(); return; }
@@ -334,10 +320,7 @@ class _AdminScanDialogState extends State<_AdminScanDialog> {
     _blinkTimeoutTimer?.cancel();
     _blinkTimeoutTimer = null;
     if (!mounted) return;
-    setState(() {
-      _livenessState  = _LivenessState.blinkDone;
-      _blinkCountdown = 0;
-    });
+    setState(() { _livenessState = _LivenessState.blinkDone; _blinkCountdown = 0; });
   }
 
   void _onBlinkTimeout() {
@@ -368,7 +351,7 @@ class _AdminScanDialogState extends State<_AdminScanDialog> {
 
   InputImage? _toInputImage(CameraImage image) {
     try {
-      final camera = _cameraController!.description;
+      final camera   = _cameraController!.description;
       final rotation = Platform.isIOS
           ? InputImageRotation.rotation0deg
           : camera.lensDirection == CameraLensDirection.front
@@ -387,35 +370,25 @@ class _AdminScanDialogState extends State<_AdminScanDialog> {
           bytesPerRow: image.planes[0].bytesPerRow,
         ),
       );
-    } catch (_) {
-      return null;
-    }
+    } catch (_) { return null; }
   }
 
   Future<void> _stopStream() async {
     if (!_isStreaming) return;
-    try {
-      await _cameraController?.stopImageStream();
-    } catch (_) {}
+    try { await _cameraController?.stopImageStream(); } catch (_) {}
     _isStreaming = false;
   }
 
   void _handleScan() async {
-    if (!_faceDetected) {
-      _showError('No face detected.');
-      return;
-    }
+    if (!_faceDetected) { _showError('No face detected.'); return; }
     if (_livenessState != _LivenessState.blinkDone) {
-      _showError('Please complete the blink check first.');
-      return;
+      _showError('Please complete the blink check first.'); return;
     }
     if (!_dbLoaded || _enrolledAdmins.isEmpty) {
-      _showError('No admin face enrolled. Please enroll in account settings first.');
-      return;
+      _showError('No admin face enrolled. Please enroll in account settings first.'); return;
     }
     if (_cameraController == null || !_cameraController!.value.isInitialized) {
-      _showError('Camera not ready. Please wait.');
-      return;
+      _showError('Camera not ready. Please wait.'); return;
     }
     if (!mounted) return;
 
@@ -425,49 +398,39 @@ class _AdminScanDialogState extends State<_AdminScanDialog> {
       await _stopStream();
       await Future.delayed(const Duration(milliseconds: 200));
 
-      final xFile = await _cameraController!.takePicture();
+      final xFile    = await _cameraController!.takePicture();
+      final inputImg = InputImage.fromFile(File(xFile.path));
+      final faces    = await FaceRecognitionService.instance.detectFaces(inputImg);
 
-      final inputImage = InputImage.fromFile(File(xFile.path));
-      final faces = await FaceRecognitionService.instance.detectFaces(inputImage);
       if (faces.isEmpty) {
         _showError('No face on capture. Try again.');
-        _restartStream();
-        return;
+        _restartStream(); return;
       }
 
       final embedding = await FaceRecognitionService.instance
           .generateEmbeddingFromFile(xFile.path, faces.first);
       if (embedding == null) {
         _showError('Could not read face. Try better lighting.');
-        _restartStream();
-        return;
+        _restartStream(); return;
       }
 
       final match = FaceRecognitionService.instance
           .findBestMatch(embedding, _enrolledAdmins);
-
       if (match == null) {
         _showError('Not recognized as admin. Access denied.');
-        _restartStream();
-        return;
+        _restartStream(); return;
       }
 
       if (!mounted) return;
       final navigator = Navigator.of(context);
-
-      try {
-        _cameraController?.dispose();
-        _cameraController = null;
-      } catch (_) {}
+      try { _cameraController?.dispose(); _cameraController = null; } catch (_) {}
 
       navigator.pop();
       await Future.delayed(const Duration(milliseconds: 300));
-
       navigator.pushAndRemoveUntil(
         MaterialPageRoute(builder: (_) => const KioskDashboard()),
         (route) => false,
       );
-
     } catch (e) {
       debugPrint('❌ Scan error: $e');
       if (mounted) _showError('Error scanning. Please try again.');
@@ -479,10 +442,7 @@ class _AdminScanDialogState extends State<_AdminScanDialog> {
 
   void _restartStream() {
     if (!mounted) return;
-    setState(() {
-      _isProcessing = false;
-      _faceDetected = false;
-    });
+    setState(() { _isProcessing = false; _faceDetected = false; });
     _resetLiveness();
     Future.delayed(const Duration(milliseconds: 300), () {
       if (mounted) _startStream();
@@ -511,15 +471,15 @@ class _AdminScanDialogState extends State<_AdminScanDialog> {
     super.dispose();
   }
 
+  // ── Build ──────────────────────────────────────────────────────────
+
   @override
   Widget build(BuildContext context) {
     final bool livenessWaiting = _livenessState == _LivenessState.waiting;
     final bool livenessPassed  = _livenessState == _LivenessState.blinkDone;
     final bool livenessFailed  = _livenessState == _LivenessState.failed;
-
     final bool canScan = _faceDetected && livenessPassed && !_isProcessing;
 
-    // Frame colour
     final Color frameColor = livenessFailed
         ? Colors.redAccent
         : livenessWaiting
@@ -528,283 +488,327 @@ class _AdminScanDialogState extends State<_AdminScanDialog> {
                 ? Colors.green
                 : Colors.white;
 
+    // Cap the dialog to the usable screen height.
+    final mq             = MediaQuery.of(context);
+    final maxDialogHeight = mq.size.height
+        - mq.viewInsets.bottom
+        - mq.padding.top
+        - mq.padding.bottom
+        - 32;
+
     return Dialog(
       backgroundColor: Colors.transparent,
-      insetPadding: const EdgeInsets.symmetric(horizontal: 32),
-      child: Container(
-        decoration: BoxDecoration(
-          color: Colors.white,
-          borderRadius: BorderRadius.circular(24),
-          boxShadow: [
-            BoxShadow(
-              color: Colors.black.withOpacity(0.15),
-              blurRadius: 30,
-              offset: const Offset(0, 10),
-            ),
-          ],
-        ),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            // ── Header ───────────────────────────────────────────
-            Container(
-              padding: const EdgeInsets.all(24),
-              decoration: const BoxDecoration(
-                color: Color(0xFF0A0E1A),
-                borderRadius: BorderRadius.only(
-                  topLeft: Radius.circular(24),
-                  topRight: Radius.circular(24),
+      insetPadding: const EdgeInsets.symmetric(horizontal: 32, vertical: 16),
+      child: ConstrainedBox(
+        constraints: BoxConstraints(maxHeight: maxDialogHeight),
+        child: Container(
+          decoration: BoxDecoration(
+            color: Colors.white,
+            borderRadius: BorderRadius.circular(24),
+            boxShadow: [
+              BoxShadow(
+                color: Colors.black.withOpacity(0.15),
+                blurRadius: 30,
+                offset: const Offset(0, 10),
+              ),
+            ],
+          ),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+
+              // ── Header — fixed, never scrolls ──────────────────
+              Container(
+                padding: const EdgeInsets.all(20),
+                decoration: const BoxDecoration(
+                  color: Color(0xFF0A0E1A),
+                  borderRadius: BorderRadius.only(
+                    topLeft:  Radius.circular(24),
+                    topRight: Radius.circular(24),
+                  ),
+                ),
+                child: Row(
+                  children: [
+                    Container(
+                      width: 42, height: 42,
+                      decoration: BoxDecoration(
+                        color: const Color(0xFF00D4FF).withOpacity(0.15),
+                        borderRadius: BorderRadius.circular(12),
+                      ),
+                      child: const Icon(Icons.admin_panel_settings_rounded,
+                          color: Color(0xFF00D4FF), size: 22),
+                    ),
+                    const SizedBox(width: 14),
+                    const Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text('Kiosk Mode',
+                              style: TextStyle(
+                                color: Colors.white,
+                                fontSize: 17,
+                                fontWeight: FontWeight.w700,
+                              )),
+                          Text('Blink to confirm liveness, then scan',
+                              style: TextStyle(
+                                color: Color(0xFF8B9DC3),
+                                fontSize: 12,
+                              )),
+                        ],
+                      ),
+                    ),
+                    GestureDetector(
+                      onTap: () => Navigator.pop(context),
+                      child: const Icon(Icons.close_rounded,
+                          color: Color(0xFF8B9DC3), size: 20),
+                    ),
+                  ],
                 ),
               ),
-              child: Row(
-                children: [
-                  Container(
-                    width: 42, height: 42,
-                    decoration: BoxDecoration(
-                      color: const Color(0xFF00D4FF).withOpacity(0.15),
-                      borderRadius: BorderRadius.circular(12),
-                    ),
-                    child: const Icon(Icons.admin_panel_settings_rounded,
-                        color: Color(0xFF00D4FF), size: 22),
-                  ),
-                  const SizedBox(width: 14),
-                  const Expanded(
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text('Kiosk Mode',
+
+              // ── Scrollable body ─────────────────────────────────
+              // Flexible lets the scroll area grow/shrink inside the
+              // ConstrainedBox without ever overflowing.
+              Flexible(
+                child: SingleChildScrollView(
+                  padding: const EdgeInsets.fromLTRB(24, 18, 24, 24),
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      const Text(
+                        'Scan your face to enter Kiosk Mode',
+                        textAlign: TextAlign.center,
+                        style: TextStyle(
+                          color: Color(0xFF1C2536),
+                          fontSize: 15,
+                          fontWeight: FontWeight.w600,
+                          height: 1.5,
+                        ),
+                      ),
+                      const SizedBox(height: 14),
+
+                      // ── Camera preview ──────────────────────────
+                      _buildCameraPreview(frameColor, livenessWaiting,
+                          livenessPassed, livenessFailed),
+
+                      const SizedBox(height: 10),
+
+                      // ── Status text ─────────────────────────────
+                      Text(
+                        _isProcessing
+                            ? 'Verifying...'
+                            : livenessFailed
+                                ? 'Blink check failed — move away & retry'
+                                : livenessWaiting
+                                    ? 'Blink now! ($_blinkCountdown s)'
+                                    : livenessPassed
+                                        ? '✓ Liveness confirmed — tap Scan'
+                                        : _faceDetected
+                                            ? 'Starting liveness check...'
+                                            : 'Position your face within the frame',
+                        textAlign: TextAlign.center,
+                        style: TextStyle(
+                          color: livenessFailed
+                              ? Colors.redAccent
+                              : livenessWaiting
+                                  ? Colors.orange
+                                  : livenessPassed
+                                      ? Colors.green
+                                      : const Color(0xFF8B9DC3),
+                          fontSize: 13,
+                          fontWeight: (livenessPassed || livenessWaiting || livenessFailed)
+                              ? FontWeight.w600
+                              : FontWeight.normal,
+                        ),
+                      ),
+
+                      const SizedBox(height: 18),
+
+                      // ── Scan button ─────────────────────────────
+                      SizedBox(
+                        width: double.infinity,
+                        height: 52,
+                        child: ElevatedButton.icon(
+                          onPressed: canScan ? _handleScan : null,
+                          icon: const Icon(
+                              Icons.face_retouching_natural_rounded, size: 20),
+                          label: const Text('Scan Admin Face',
+                              style: TextStyle(
+                                  fontSize: 15, fontWeight: FontWeight.w700)),
+                          style: ElevatedButton.styleFrom(
+                            backgroundColor: livenessPassed
+                                ? Colors.green
+                                : const Color(0xFF0A0E1A),
+                            foregroundColor: Colors.white,
+                            disabledBackgroundColor: Colors.grey.withOpacity(0.3),
+                            disabledForegroundColor: Colors.white54,
+                            elevation: 0,
+                            shape: RoundedRectangleBorder(
+                                borderRadius: BorderRadius.circular(14)),
+                          ),
+                        ),
+                      ),
+
+                      const SizedBox(height: 8),
+
+                      TextButton(
+                        onPressed: () => Navigator.pop(context),
+                        child: const Text('Cancel',
                             style: TextStyle(
-                              color: Colors.white,
-                              fontSize: 17,
-                              fontWeight: FontWeight.w700,
-                            )),
-                        Text('Blink to confirm liveness, then scan',
-                            style: TextStyle(
-                              color: Color(0xFF8B9DC3),
-                              fontSize: 12,
-                            )),
-                      ],
-                    ),
+                                color: Color(0xFF8B9DC3),
+                                fontWeight: FontWeight.w500)),
+                      ),
+                    ],
                   ),
-                  GestureDetector(
-                    onTap: () => Navigator.pop(context),
-                    child: const Icon(Icons.close_rounded,
-                        color: Color(0xFF8B9DC3), size: 20),
-                  ),
-                ],
+                ),
               ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  // ── Camera preview — no stretch, no overflow ───────────────────────
+
+  Widget _buildCameraPreview(
+    Color frameColor,
+    bool livenessWaiting,
+    bool livenessPassed,
+    bool livenessFailed,
+  ) {
+    // Loading placeholder
+    if (!_cameraReady || _cameraController == null) {
+      return ClipRRect(
+        borderRadius: BorderRadius.circular(16),
+        child: AspectRatio(
+          aspectRatio: 3 / 4,
+          child: Container(
+            color: const Color(0xFF0A0E1A),
+            child: const Center(
+              child: CircularProgressIndicator(
+                  color: Color(0xFF00D4FF), strokeWidth: 2),
             ),
+          ),
+        ),
+      );
+    }
 
-            // ── Camera + Scan UI ─────────────────────────────────
-            Padding(
-              padding: const EdgeInsets.all(24),
-              child: Column(
-                children: [
-                  const Text(
-                    'Scan your face to enter Kiosk Mode',
-                    textAlign: TextAlign.center,
-                    style: TextStyle(
-                      color: Color(0xFF1C2536),
-                      fontSize: 15,
-                      fontWeight: FontWeight.w600,
-                      height: 1.5,
-                    ),
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final previewWidth = constraints.maxWidth;
+
+        // Some Android cameras report landscape ratio even in portrait — invert.
+        final camRatio     = _cameraController!.value.aspectRatio;
+        final portraitRatio = camRatio > 1 ? 1 / camRatio : camRatio;
+
+        // Cap height to 55% of screen so the buttons below always stay visible.
+        final screenHeight  = MediaQuery.of(context).size.height;
+        final idealHeight   = previewWidth / portraitRatio;
+        final previewHeight = idealHeight.clamp(0.0, screenHeight * 0.55);
+
+        return ClipRRect(
+          borderRadius: BorderRadius.circular(16),
+          child: SizedBox(
+            width:  previewWidth,
+            height: previewHeight,
+            child: Stack(
+              fit: StackFit.expand,
+              children: [
+                // FittedBox prevents any distortion.
+                FittedBox(
+                  fit: BoxFit.cover,
+                  child: SizedBox(
+                    width:  _cameraController!.value.previewSize!.height,
+                    height: _cameraController!.value.previewSize!.width,
+                    child: CameraPreview(_cameraController!),
                   ),
-                  const SizedBox(height: 20),
+                ),
 
-                  // ── Live Camera Preview (aspect-ratio-correct) ───
-                  ClipRRect(
-                    borderRadius: BorderRadius.circular(16),
-                    child: AspectRatio(
-                      // Use the camera's real aspect ratio so it never stretches.
-                      // Falls back to portrait 3:4 while camera is initialising.
-                      aspectRatio: _cameraReady && _cameraController != null
-                          ? _cameraController!.value.aspectRatio
-                          : 3 / 4,
-                      child: _cameraReady && _cameraController != null
-                          ? Stack(
-                              fit: StackFit.expand,
-                              children: [
-                                CameraPreview(_cameraController!),
+                // Corner frame
+                CustomPaint(painter: _CornerFramePainter(color: frameColor)),
 
-                                // Corner frame painter (colour-reactive)
-                                CustomPaint(
-                                  painter: _CornerFramePainter(color: frameColor),
-                                ),
-
-                                // Blink challenge overlay
-                                if (livenessWaiting)
-                                  Container(
-                                    color: Colors.black38,
-                                    child: Center(
-                                      child: Column(
-                                          mainAxisSize: MainAxisSize.min,
-                                          children: [
-                                            const Icon(
-                                                Icons.remove_red_eye_outlined,
-                                                color: Colors.amber,
-                                                size: 44),
-                                            const SizedBox(height: 8),
-                                            const Text('Please BLINK',
-                                                style: TextStyle(
-                                                    color: Colors.amber,
-                                                    fontSize: 18,
-                                                    fontWeight:
-                                                        FontWeight.w800)),
-                                            const SizedBox(height: 4),
-                                            Text('$_blinkCountdown s remaining',
-                                                style: const TextStyle(
-                                                    color: Colors.amber,
-                                                    fontSize: 13)),
-                                          ]),
-                                    ),
-                                  ),
-
-                                // Liveness failed overlay
-                                if (livenessFailed)
-                                  Container(
-                                    color: Colors.black54,
-                                    child: const Center(
-                                      child: Column(
-                                          mainAxisSize: MainAxisSize.min,
-                                          children: [
-                                            Icon(Icons.gpp_bad_rounded,
-                                                color: Colors.redAccent,
-                                                size: 44),
-                                            SizedBox(height: 8),
-                                            Text('Liveness Failed',
-                                                style: TextStyle(
-                                                    color: Colors.redAccent,
-                                                    fontSize: 16,
-                                                    fontWeight:
-                                                        FontWeight.w800)),
-                                            SizedBox(height: 4),
-                                            Text('Move away & try again',
-                                                style: TextStyle(
-                                                    color: Colors.redAccent,
-                                                    fontSize: 12)),
-                                          ]),
-                                    ),
-                                  ),
-
-                                // Liveness passed badge
-                                if (livenessPassed && !_isProcessing)
-                                  const Positioned(
-                                    top: 10, right: 10,
-                                    child: Icon(Icons.verified_rounded,
-                                        color: Colors.green, size: 32),
-                                  ),
-
-                                // Processing overlay
-                                if (_isProcessing)
-                                  Container(
-                                    color: Colors.black54,
-                                    child: const Center(
-                                      child: Column(
-                                        mainAxisSize: MainAxisSize.min,
-                                        children: [
-                                          CircularProgressIndicator(
-                                              color: Colors.white,
-                                              strokeWidth: 2),
-                                          SizedBox(height: 10),
-                                          Text('Verifying admin...',
-                                              style: TextStyle(
-                                                  color: Colors.white,
-                                                  fontSize: 13)),
-                                        ],
-                                      ),
-                                    ),
-                                  ),
-                              ],
-                            )
-                          : Container(
-                              color: const Color(0xFF0A0E1A),
-                              child: const Center(
-                                child: CircularProgressIndicator(
-                                  color: Color(0xFF00D4FF),
-                                  strokeWidth: 2,
-                                ),
-                              ),
-                            ),
-                    ),
-                  ),
-
-                  const SizedBox(height: 12),
-
-                  // Status text
-                  Text(
-                    _isProcessing
-                        ? 'Verifying...'
-                        : livenessFailed
-                            ? 'Blink check failed — move away & retry'
-                            : livenessWaiting
-                                ? 'Blink now! ($_blinkCountdown s)'
-                                : livenessPassed
-                                    ? '✓ Liveness confirmed — tap Scan'
-                                    : _faceDetected
-                                        ? 'Starting liveness check...'
-                                        : 'Position your face within the frame',
-                    style: TextStyle(
-                      color: livenessFailed
-                          ? Colors.redAccent
-                          : livenessWaiting
-                              ? Colors.orange
-                              : livenessPassed
-                                  ? Colors.green
-                                  : const Color(0xFF8B9DC3),
-                      fontSize: 13,
-                      fontWeight: (livenessPassed || livenessWaiting ||
-                              livenessFailed)
-                          ? FontWeight.w600
-                          : FontWeight.normal,
-                    ),
-                  ),
-
-                  const SizedBox(height: 20),
-
-                  // ── Scan Button ─────────────────────────────────
-                  SizedBox(
-                    width: double.infinity,
-                    height: 52,
-                    child: ElevatedButton.icon(
-                      onPressed: canScan ? _handleScan : null,
-                      icon: const Icon(
-                          Icons.face_retouching_natural_rounded,
-                          size: 20),
-                      label: const Text('Scan Admin Face',
-                          style: TextStyle(
-                              fontSize: 15,
-                              fontWeight: FontWeight.w700)),
-                      style: ElevatedButton.styleFrom(
-                        backgroundColor: livenessPassed
-                            ? Colors.green
-                            : const Color(0xFF0A0E1A),
-                        foregroundColor: Colors.white,
-                        disabledBackgroundColor:
-                            Colors.grey.withOpacity(0.3),
-                        disabledForegroundColor: Colors.white54,
-                        elevation: 0,
-                        shape: RoundedRectangleBorder(
-                            borderRadius: BorderRadius.circular(14)),
+                // Blink overlay
+                if (livenessWaiting)
+                  Container(
+                    color: Colors.black38,
+                    child: Center(
+                      child: Column(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          const Icon(Icons.remove_red_eye_outlined,
+                              color: Colors.amber, size: 44),
+                          const SizedBox(height: 8),
+                          const Text('Please BLINK',
+                              style: TextStyle(
+                                  color: Colors.amber,
+                                  fontSize: 18,
+                                  fontWeight: FontWeight.w800)),
+                          const SizedBox(height: 4),
+                          Text('$_blinkCountdown s remaining',
+                              style: const TextStyle(
+                                  color: Colors.amber, fontSize: 13)),
+                        ],
                       ),
                     ),
                   ),
 
-                  const SizedBox(height: 10),
-
-                  TextButton(
-                    onPressed: () => Navigator.pop(context),
-                    child: const Text('Cancel',
-                        style: TextStyle(
-                            color: Color(0xFF8B9DC3),
-                            fontWeight: FontWeight.w500)),
+                // Liveness failed
+                if (livenessFailed)
+                  Container(
+                    color: Colors.black54,
+                    child: const Center(
+                      child: Column(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Icon(Icons.gpp_bad_rounded,
+                              color: Colors.redAccent, size: 44),
+                          SizedBox(height: 8),
+                          Text('Liveness Failed',
+                              style: TextStyle(
+                                  color: Colors.redAccent,
+                                  fontSize: 16,
+                                  fontWeight: FontWeight.w800)),
+                          SizedBox(height: 4),
+                          Text('Move away & try again',
+                              style: TextStyle(
+                                  color: Colors.redAccent, fontSize: 12)),
+                        ],
+                      ),
+                    ),
                   ),
-                ],
-              ),
+
+                // Liveness passed badge
+                if (livenessPassed && !_isProcessing)
+                  const Positioned(
+                    top: 10, right: 10,
+                    child: Icon(Icons.verified_rounded,
+                        color: Colors.green, size: 32),
+                  ),
+
+                // Processing overlay
+                if (_isProcessing)
+                  Container(
+                    color: Colors.black54,
+                    child: const Center(
+                      child: Column(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          CircularProgressIndicator(
+                              color: Colors.white, strokeWidth: 2),
+                          SizedBox(height: 10),
+                          Text('Verifying admin...',
+                              style: TextStyle(
+                                  color: Colors.white, fontSize: 13)),
+                        ],
+                      ),
+                    ),
+                  ),
+              ],
             ),
-          ],
-        ),
-      ),
+          ),
+        );
+      },
     );
   }
 }
@@ -824,16 +828,16 @@ class _CornerFramePainter extends CustomPainter {
       ..strokeCap = StrokeCap.round;
 
     const c = 20.0;
-    canvas.drawLine(const Offset(0, c), const Offset(0, 0), paint);
-    canvas.drawLine(const Offset(0, 0), const Offset(c, 0), paint);
-    canvas.drawLine(Offset(size.width - c, 0), Offset(size.width, 0), paint);
-    canvas.drawLine(Offset(size.width, 0), Offset(size.width, c), paint);
-    canvas.drawLine(Offset(0, size.height - c), Offset(0, size.height), paint);
-    canvas.drawLine(Offset(0, size.height), Offset(c, size.height), paint);
+    canvas.drawLine(const Offset(0, c),           const Offset(0, 0),           paint);
+    canvas.drawLine(const Offset(0, 0),           const Offset(c, 0),           paint);
+    canvas.drawLine(Offset(size.width - c, 0),    Offset(size.width, 0),        paint);
+    canvas.drawLine(Offset(size.width, 0),        Offset(size.width, c),        paint);
+    canvas.drawLine(Offset(0, size.height - c),   Offset(0, size.height),       paint);
+    canvas.drawLine(Offset(0, size.height),       Offset(c, size.height),       paint);
     canvas.drawLine(Offset(size.width - c, size.height),
-        Offset(size.width, size.height), paint);
+                    Offset(size.width, size.height),                            paint);
     canvas.drawLine(Offset(size.width, size.height),
-        Offset(size.width, size.height - c), paint);
+                    Offset(size.width, size.height - c),                        paint);
   }
 
   @override
