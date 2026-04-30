@@ -172,16 +172,12 @@ class DatabaseHelper {
         if (matching.isNotEmpty) {
           await db.update(
             'attendance',
-            {
-              'time_out': row['time_in'],
-              'status': 'completed',
-            },
+            {'time_out': row['time_in'], 'status': 'completed'},
             where: 'id = ?',
             whereArgs: [matching.first['id']],
           );
         }
-        await db.delete('attendance',
-            where: 'id = ?', whereArgs: [row['id']]);
+        await db.delete('attendance', where: 'id = ?', whereArgs: [row['id']]);
       }
 
       await db.execute('ALTER TABLE attendance RENAME TO attendance_old');
@@ -226,9 +222,6 @@ class DatabaseHelper {
   // SEED FROM SUPABASE (new device / first launch)
   // ═══════════════════════════════════════════════════════════════════
 
-  /// Pulls all data from Supabase and inserts into local SQLite.
-  /// Uses ConflictAlgorithm.replace so it is safe to call again
-  /// if you want to force a full re-sync.
   Future<void> seedFromSupabase() async {
     await SyncService.instance.pullAll((table, rows) async {
       final db = await database;
@@ -347,9 +340,17 @@ class DatabaseHelper {
     return count;
   }
 
+  /// Deletes professor locally AND from Supabase.
+  /// Supabase Realtime will propagate the delete to all other devices.
   Future<int> deleteProfessor(int id) async {
     final db = await database;
-    return db.delete('professors', where: 'id = ?', whereArgs: [id]);
+    final count = await db.delete('professors', where: 'id = ?', whereArgs: [id]);
+
+    // ── SYNC ────────────────────────────────────────────────────────
+    await SyncService.instance.deleteProfessor(id);
+    // ────────────────────────────────────────────────────────────────
+
+    return count;
   }
 
   Future<int> saveProfessorFaceEmbedding(int id, String embedding) async {
@@ -392,9 +393,17 @@ class DatabaseHelper {
     return count;
   }
 
+  /// Deletes subject locally AND from Supabase.
+  /// Supabase Realtime will propagate the delete to all other devices.
   Future<int> deleteSubject(int id) async {
     final db = await database;
-    return db.delete('subjects', where: 'id = ?', whereArgs: [id]);
+    final count = await db.delete('subjects', where: 'id = ?', whereArgs: [id]);
+
+    // ── SYNC ────────────────────────────────────────────────────────
+    await SyncService.instance.deleteSubject(id);
+    // ────────────────────────────────────────────────────────────────
+
+    return count;
   }
 
   // ═══════════════════════════════════════════════════════════════════
@@ -431,17 +440,24 @@ class DatabaseHelper {
     return count;
   }
 
+  /// Deletes section locally AND from Supabase.
+  /// Supabase Realtime will propagate the delete to all other devices.
   Future<int> deleteSection(int id) async {
     final db = await database;
-    return db.delete('sections', where: 'id = ?', whereArgs: [id]);
+    final count = await db.delete('sections', where: 'id = ?', whereArgs: [id]);
+
+    // ── SYNC ────────────────────────────────────────────────────────
+    await SyncService.instance.deleteSection(id);
+    // ────────────────────────────────────────────────────────────────
+
+    return count;
   }
 
   // ═══════════════════════════════════════════════════════════════════
   // PROFESSOR ↔ SUBJECT ASSIGNMENTS
   // ═══════════════════════════════════════════════════════════════════
 
-  Future<int> assignSubjectToProfessor(
-      int professorId, int subjectId) async {
+  Future<int> assignSubjectToProfessor(int professorId, int subjectId) async {
     final db = await database;
     final id = await db.insert(
       'professor_subjects',
@@ -462,12 +478,31 @@ class DatabaseHelper {
     return id;
   }
 
-  Future<int> removeSubjectFromProfessor(
-      int professorId, int subjectId) async {
+  /// Removes professor-subject assignment locally AND from Supabase.
+  Future<int> removeSubjectFromProfessor(int professorId, int subjectId) async {
     final db = await database;
-    return db.delete('professor_subjects',
-        where: 'professor_id = ? AND subject_id = ?',
-        whereArgs: [professorId, subjectId]);
+
+    // Get the row id first so we can delete it by id in Supabase
+    final rows = await db.query(
+      'professor_subjects',
+      where: 'professor_id = ? AND subject_id = ?',
+      whereArgs: [professorId, subjectId],
+    );
+
+    final count = await db.delete(
+      'professor_subjects',
+      where: 'professor_id = ? AND subject_id = ?',
+      whereArgs: [professorId, subjectId],
+    );
+
+    // ── SYNC ────────────────────────────────────────────────────────
+    if (rows.isNotEmpty) {
+      final rowId = rows.first['id'] as int;
+      await SyncService.instance.deleteProfessorSubject(rowId);
+    }
+    // ────────────────────────────────────────────────────────────────
+
+    return count;
   }
 
   Future<List<Map<String, dynamic>>> getSubjectsByProfessor(
@@ -542,12 +577,31 @@ class DatabaseHelper {
     return id;
   }
 
-  Future<int> removeSectionFromSubject(
-      int subjectId, int sectionId) async {
+  /// Removes subject-section assignment locally AND from Supabase.
+  Future<int> removeSectionFromSubject(int subjectId, int sectionId) async {
     final db = await database;
-    return db.delete('subject_sections',
-        where: 'subject_id = ? AND section_id = ?',
-        whereArgs: [subjectId, sectionId]);
+
+    // Get the row id first so we can delete it by id in Supabase
+    final rows = await db.query(
+      'subject_sections',
+      where: 'subject_id = ? AND section_id = ?',
+      whereArgs: [subjectId, sectionId],
+    );
+
+    final count = await db.delete(
+      'subject_sections',
+      where: 'subject_id = ? AND section_id = ?',
+      whereArgs: [subjectId, sectionId],
+    );
+
+    // ── SYNC ────────────────────────────────────────────────────────
+    if (rows.isNotEmpty) {
+      final rowId = rows.first['id'] as int;
+      await SyncService.instance.deleteSubjectSection(rowId);
+    }
+    // ────────────────────────────────────────────────────────────────
+
+    return count;
   }
 
   Future<List<Map<String, dynamic>>> getSubjectSectionsDetail() async {
@@ -653,9 +707,17 @@ class DatabaseHelper {
     return count;
   }
 
+  /// Deletes student locally AND from Supabase.
+  /// Supabase Realtime will propagate the delete to all other devices.
   Future<int> deleteStudent(int id) async {
     final db = await database;
-    return db.delete('students', where: 'id = ?', whereArgs: [id]);
+    final count = await db.delete('students', where: 'id = ?', whereArgs: [id]);
+
+    // ── SYNC ────────────────────────────────────────────────────────
+    await SyncService.instance.deleteStudent(id);
+    // ────────────────────────────────────────────────────────────────
+
+    return count;
   }
 
   Future<int> saveStudentFaceEmbedding(int id, String embedding) async {
@@ -708,8 +770,6 @@ class DatabaseHelper {
   // ATTENDANCE
   // ═══════════════════════════════════════════════════════════════════
 
-  /// Records a time-in. Each student gets ONE row per class day.
-  /// UNIQUE(student_id, subject_section_id, date) prevents duplicates.
   Future<int> markAttendance({
     required int studentId,
     required int subjectSectionId,
@@ -745,8 +805,6 @@ class DatabaseHelper {
     return id;
   }
 
-  /// Records a time-out by updating the existing attendance row for today.
-  /// Returns true if a row was found and updated, false if no time-in exists.
   Future<bool> markTimeOut({
     required int studentId,
     required int subjectSectionId,
@@ -756,10 +814,7 @@ class DatabaseHelper {
     final db = await database;
     final count = await db.update(
       'attendance',
-      {
-        'time_out': timeOut,
-        'status': 'completed',
-      },
+      {'time_out': timeOut, 'status': 'completed'},
       where: 'student_id = ? AND subject_section_id = ? AND date = ?',
       whereArgs: [studentId, subjectSectionId, date],
     );
@@ -788,7 +843,20 @@ class DatabaseHelper {
     return count > 0;
   }
 
-  /// Returns the attendance row for a student on a specific day, or null.
+  /// Deletes an attendance record locally AND from Supabase.
+  /// Supabase Realtime will propagate the delete to all other devices.
+  Future<int> deleteAttendance(int id) async {
+    final db = await database;
+    final count =
+        await db.delete('attendance', where: 'id = ?', whereArgs: [id]);
+
+    // ── SYNC ────────────────────────────────────────────────────────
+    await SyncService.instance.deleteAttendance(id);
+    // ────────────────────────────────────────────────────────────────
+
+    return count;
+  }
+
   Future<Map<String, dynamic>?> getAttendanceForToday({
     required int studentId,
     required int subjectSectionId,
@@ -803,7 +871,6 @@ class DatabaseHelper {
     return result.isNotEmpty ? result.first : null;
   }
 
-  /// True if the student already has a time-in row today.
   Future<bool> alreadyMarkedToday({
     required int studentId,
     required int subjectSectionId,
@@ -817,7 +884,6 @@ class DatabaseHelper {
     return row != null;
   }
 
-  /// True if the student has timed in but NOT yet timed out today.
   Future<bool> hasTimedInButNotOut({
     required int studentId,
     required int subjectSectionId,
@@ -831,8 +897,6 @@ class DatabaseHelper {
     return row != null && row['time_out'] == null;
   }
 
-  /// Fetch all attendance rows for a subject-section, each row is one
-  /// student for one day. Includes time_out and student_id for the scanner.
   Future<List<Map<String, dynamic>>> getAttendanceBySubjectSection(
       int subjectSectionId) async {
     final db = await database;

@@ -19,14 +19,11 @@ class SyncService {
   // ═══════════════════════════════════════════
 
   Future<void> init() async {
-    // connectivity_plus v5+ returns List<ConnectivityResult>
     final results = await Connectivity().checkConnectivity();
     _isOnline = !results.contains(ConnectivityResult.none);
 
     Connectivity().onConnectivityChanged.listen((results) async {
       final wasOffline = !_isOnline;
-
-      // results is now List<ConnectivityResult> in newer versions
       _isOnline = !results.contains(ConnectivityResult.none);
 
       if (wasOffline && _isOnline) {
@@ -40,9 +37,7 @@ class SyncService {
     _startRealtimeListeners();
   }
 
-  /// Call this from your app's WidgetsBindingObserver.didChangeAppLifecycleState
-  /// when AppLifecycleState.resumed — ensures queue is flushed even if the
-  /// connectivity stream missed the reconnect event.
+  /// Call from WidgetsBindingObserver.didChangeAppLifecycleState on resumed.
   Future<void> syncOnResume() async {
     final results = await Connectivity().checkConnectivity();
     _isOnline = !results.contains(ConnectivityResult.none);
@@ -55,7 +50,7 @@ class SyncService {
   }
 
   // ═══════════════════════════════════════════
-  // SEED: Supabase → Local SQLite (on every launch)
+  // SEED: Supabase → Local SQLite
   // ═══════════════════════════════════════════
 
   Future<void> _seedAll() async {
@@ -63,7 +58,7 @@ class SyncService {
 
     final db = await DatabaseHelper.instance.database;
 
-    // Order matters — parent tables before child tables (FK constraints)
+    // Parent tables before child tables (FK order)
     final tables = [
       'professors',
       'subjects',
@@ -78,23 +73,17 @@ class SyncService {
       try {
         final result = await _client.from(table).select();
         var rows = List<Map<String, dynamic>>.from(result);
-
         rows = _sanitize(table, rows);
 
         print('🌱 Seeding $table → ${rows.length} rows');
 
         final batch = db.batch();
         for (final row in rows) {
-          batch.insert(
-            table,
-            row,
-            conflictAlgorithm: ConflictAlgorithm.replace,
-          );
+          batch.insert(table, row, conflictAlgorithm: ConflictAlgorithm.replace);
         }
         await batch.commit(noResult: true);
       } catch (e) {
         print('❌ Seed error on $table: $e');
-        // Continue to next table — do NOT rethrow
       }
     }
 
@@ -106,7 +95,6 @@ class SyncService {
   // ═══════════════════════════════════════════
 
   void _startRealtimeListeners() {
-    // Unsubscribe existing channels first (safe re-init)
     for (final ch in _channels) {
       _client.removeChannel(ch);
     }
@@ -155,44 +143,43 @@ class SyncService {
     }
   }
 
-  Future<void> _handleLiveRow(
-      String table, Map<String, dynamic> row) async {
+  Future<void> _handleLiveRow(String table, Map<String, dynamic> row) async {
     try {
       final db = await DatabaseHelper.instance.database;
       final sanitized = _sanitize(table, [row]).first;
-      await db.insert(
-        table,
-        sanitized,
-        conflictAlgorithm: ConflictAlgorithm.replace,
-      );
+      await db.insert(table, sanitized, conflictAlgorithm: ConflictAlgorithm.replace);
       print('⚡ Live upsert → $table');
     } catch (e) {
       print('❌ Live upsert error on $table: $e');
     }
   }
 
-  Future<void> _handleLiveDelete(
-      String table, Map<String, dynamic> row) async {
-    // Supabase requires REPLICA IDENTITY FULL on the table for oldRecord to be populated.
-    // Run in Supabase SQL editor:
-    //   ALTER TABLE professors       REPLICA IDENTITY FULL;
-    //   ALTER TABLE subjects         REPLICA IDENTITY FULL;
-    //   ALTER TABLE sections         REPLICA IDENTITY FULL;
+  Future<void> _handleLiveDelete(String table, Map<String, dynamic> row) async {
+    print('📡 _handleLiveDelete called → $table | oldRecord: $row');
+
+    // Requires REPLICA IDENTITY FULL on every table.
+    // Run in Supabase SQL Editor:
+    //   ALTER TABLE professors         REPLICA IDENTITY FULL;
+    //   ALTER TABLE subjects           REPLICA IDENTITY FULL;
+    //   ALTER TABLE sections           REPLICA IDENTITY FULL;
     //   ALTER TABLE professor_subjects REPLICA IDENTITY FULL;
-    //   ALTER TABLE subject_sections REPLICA IDENTITY FULL;
-    //   ALTER TABLE students         REPLICA IDENTITY FULL;
-    //   ALTER TABLE attendance       REPLICA IDENTITY FULL;
+    //   ALTER TABLE subject_sections   REPLICA IDENTITY FULL;
+    //   ALTER TABLE students           REPLICA IDENTITY FULL;
+    //   ALTER TABLE attendance         REPLICA IDENTITY FULL;
     if (row.isEmpty) {
-      print(
-          '⚠️ Live delete on $table — oldRecord empty. Enable REPLICA IDENTITY FULL.');
+      print('⚠️ Live delete on $table — oldRecord is EMPTY. '
+          'Run: ALTER TABLE $table REPLICA IDENTITY FULL;');
       return;
     }
+
     try {
       final db = await DatabaseHelper.instance.database;
       final id = row['id'];
       if (id != null) {
-        await db.delete(table, where: 'id = ?', whereArgs: [id]);
-        print('🗑️ Live delete → $table #$id');
+        final affected = await db.delete(table, where: 'id = ?', whereArgs: [id]);
+        print('🗑️ Live delete → $table #$id (rows affected: $affected)');
+      } else {
+        print('⚠️ Live delete on $table — oldRecord has no id field: $row');
       }
     } catch (e) {
       print('❌ Live delete error on $table: $e');
@@ -225,7 +212,6 @@ class SyncService {
   // OFFLINE QUEUE
   // ═══════════════════════════════════════════
 
-  /// Saves a failed upsert sync to local SQLite queue.
   Future<int> _enqueue(String table, Map<String, dynamic> payload) async {
     try {
       final db = await DatabaseHelper.instance.database;
@@ -237,15 +223,12 @@ class SyncService {
       print('📥 Queued offline upsert: $table (queue id=$id)');
       return id;
     } catch (e) {
-      print(
-          '❌ CRITICAL: Failed to enqueue upsert for $table — data may be lost! Error: $e');
-      print(
-          '   ↳ Make sure sync_queue table exists in your DatabaseHelper migration.');
+      print('❌ CRITICAL: Failed to enqueue upsert for $table: $e');
+      print('   ↳ Make sure sync_queue table exists in your DatabaseHelper migration.');
       return -1;
     }
   }
 
-  /// Saves a failed delete sync to local SQLite queue.
   Future<int> _enqueueDelete(String table, int id) async {
     try {
       final db = await DatabaseHelper.instance.database;
@@ -257,10 +240,8 @@ class SyncService {
       print('📥 Queued offline delete: $table #$id (queue id=$queueId)');
       return queueId;
     } catch (e) {
-      print(
-          '❌ CRITICAL: Failed to enqueue delete for $table #$id — data may be lost! Error: $e');
-      print(
-          '   ↳ Make sure sync_queue table exists in your DatabaseHelper migration.');
+      print('❌ CRITICAL: Failed to enqueue delete for $table #$id: $e');
+      print('   ↳ Make sure sync_queue table exists in your DatabaseHelper migration.');
       return -1;
     }
   }
@@ -270,7 +251,6 @@ class SyncService {
     if (!_isOnline) return;
     final db = await DatabaseHelper.instance.database;
 
-    // Check sync_queue table exists before querying
     final tables = await db.rawQuery(
       "SELECT name FROM sqlite_master WHERE type='table' AND name='sync_queue'",
     );
@@ -296,22 +276,26 @@ class SyncService {
             Map<String, dynamic>.from(jsonDecode(item['payload'] as String));
 
         if (operation == 'delete') {
-          // Flush offline delete → Supabase
           final id = payload['id'];
           if (id != null) {
-            await _client.from(table).delete().eq('id', id);
-            print(
-                '✅ Flushed queued DELETE → $table #$id (queue id=${item['id']})');
+            final response = await _client
+                .from(table)
+                .delete()
+                .eq('id', id)
+                .select();
+            print('✅ Flushed queued DELETE → $table #$id '
+                '(affected: ${response.length}, queue id=${item['id']})');
+            if (response.isEmpty) {
+              print('⚠️ WARNING: Supabase deleted 0 rows for $table #$id '
+                  '— row may already be gone or RLS is blocking.');
+            }
           }
         } else {
-          // Flush offline upsert → Supabase
           await _client.from(table).upsert(payload);
-          print(
-              '✅ Flushed queued UPSERT → $table (queue id=${item['id']})');
+          print('✅ Flushed queued UPSERT → $table (queue id=${item['id']})');
         }
 
-        await db.delete('sync_queue',
-            where: 'id = ?', whereArgs: [item['id']]);
+        await db.delete('sync_queue', where: 'id = ?', whereArgs: [item['id']]);
       } catch (e) {
         print('❌ Failed to flush queued record (id=${item['id']}): $e');
         // Leave it in the queue to retry next time
@@ -326,7 +310,7 @@ class SyncService {
   // ═══════════════════════════════════════════
 
   Future<String?> uploadFaceEmbedding({
-    required String type, // 'students' or 'professors'
+    required String type,
     required int id,
     required String embeddingJson,
   }) async {
@@ -334,9 +318,7 @@ class SyncService {
     try {
       final path = 'embeddings/$type/$id.json';
       final bytes = utf8.encode(embeddingJson);
-      await _client.storage
-          .from('face-embeddings')
-          .uploadBinary(
+      await _client.storage.from('face-embeddings').uploadBinary(
             path,
             bytes,
             fileOptions: const FileOptions(upsert: true),
@@ -355,8 +337,7 @@ class SyncService {
     if (!_isOnline) return null;
     try {
       final path = 'embeddings/$type/$id.json';
-      final bytes =
-          await _client.storage.from('face-embeddings').download(path);
+      final bytes = await _client.storage.from('face-embeddings').download(path);
       return utf8.decode(bytes);
     } catch (e) {
       print('❌ Download face embedding error: $e');
@@ -369,10 +350,7 @@ class SyncService {
   // ═══════════════════════════════════════════
 
   Future<void> pushAttendance(Map<String, dynamic> row) async {
-    if (!_isOnline) {
-      await _enqueue('attendance', row);
-      return;
-    }
+    if (!_isOnline) { await _enqueue('attendance', row); return; }
     try {
       await _client.from('attendance').upsert(row);
     } catch (e) {
@@ -382,12 +360,8 @@ class SyncService {
   }
 
   Future<void> pushStudent(Map<String, dynamic> row) async {
-    // Sanitize BEFORE enqueue or upsert
     final sanitized = _sanitize('students', [row]).first;
-    if (!_isOnline) {
-      await _enqueue('students', sanitized);
-      return;
-    }
+    if (!_isOnline) { await _enqueue('students', sanitized); return; }
     try {
       await _client.from('students').upsert(sanitized);
     } catch (e) {
@@ -397,12 +371,8 @@ class SyncService {
   }
 
   Future<void> pushProfessor(Map<String, dynamic> row) async {
-    // Sanitize before enqueue AND before upsert
     final sanitized = _sanitize('professors', [row]).first;
-    if (!_isOnline) {
-      await _enqueue('professors', sanitized);
-      return;
-    }
+    if (!_isOnline) { await _enqueue('professors', sanitized); return; }
     try {
       await _client.from('professors').upsert(sanitized);
     } catch (e) {
@@ -412,10 +382,7 @@ class SyncService {
   }
 
   Future<void> pushSubject(Map<String, dynamic> row) async {
-    if (!_isOnline) {
-      await _enqueue('subjects', row);
-      return;
-    }
+    if (!_isOnline) { await _enqueue('subjects', row); return; }
     try {
       await _client.from('subjects').upsert(row);
     } catch (e) {
@@ -425,10 +392,7 @@ class SyncService {
   }
 
   Future<void> pushSection(Map<String, dynamic> row) async {
-    if (!_isOnline) {
-      await _enqueue('sections', row);
-      return;
-    }
+    if (!_isOnline) { await _enqueue('sections', row); return; }
     try {
       await _client.from('sections').upsert(row);
     } catch (e) {
@@ -438,10 +402,7 @@ class SyncService {
   }
 
   Future<void> pushSubjectSection(Map<String, dynamic> row) async {
-    if (!_isOnline) {
-      await _enqueue('subject_sections', row);
-      return;
-    }
+    if (!_isOnline) { await _enqueue('subject_sections', row); return; }
     try {
       await _client.from('subject_sections').upsert(row);
     } catch (e) {
@@ -451,10 +412,7 @@ class SyncService {
   }
 
   Future<void> pushProfessorSubject(Map<String, dynamic> row) async {
-    if (!_isOnline) {
-      await _enqueue('professor_subjects', row);
-      return;
-    }
+    if (!_isOnline) { await _enqueue('professor_subjects', row); return; }
     try {
       await _client.from('professor_subjects').upsert(row);
     } catch (e) {
@@ -464,30 +422,32 @@ class SyncService {
   }
 
   // ═══════════════════════════════════════════
-  // DELETE: Local + Supabase (with offline queue)
+  // DELETE: Supabase hard delete (with offline queue)
+  // Realtime propagates the DELETE event to all other online devices
+  // automatically via _handleLiveDelete → local SQLite delete.
   // ═══════════════════════════════════════════
 
-  /// Generic delete — removes from local SQLite immediately,
-  /// then pushes to Supabase (or queues if offline).
-  /// Supabase Realtime will propagate the delete to all other online devices.
   Future<void> _pushDelete(String table, int id) async {
-    // Always delete locally first so UI feels instant
-    try {
-      final db = await DatabaseHelper.instance.database;
-      await db.delete(table, where: 'id = ?', whereArgs: [id]);
-      print('🗑️ Local delete → $table #$id');
-    } catch (e) {
-      print('❌ Local delete error on $table #$id: $e');
-    }
-
-    // Then push to Supabase or queue
     if (!_isOnline) {
+      print('📥 Offline — queuing delete for $table #$id');
       await _enqueueDelete(table, id);
       return;
     }
     try {
-      await _client.from(table).delete().eq('id', id);
-      print('🗑️ Remote delete → $table #$id');
+      print('🌐 Attempting remote delete → $table #$id');
+      final response = await _client
+          .from(table)
+          .delete()
+          .eq('id', id)
+          .select(); // .select() returns deleted rows so we can confirm
+
+      if (response.isEmpty) {
+        print('⚠️ WARNING: Supabase deleted 0 rows for $table #$id '
+            '— check RLS policies or if row exists.');
+      } else {
+        print('✅ Remote delete confirmed → $table #$id '
+            '(deleted ${response.length} row(s))');
+      }
     } catch (e) {
       print('❌ Remote delete error on $table #$id: $e — queuing for retry');
       await _enqueueDelete(table, id);
@@ -499,23 +459,19 @@ class SyncService {
   Future<void> deleteProfessor(int id) => _pushDelete('professors', id);
   Future<void> deleteSubject(int id) => _pushDelete('subjects', id);
   Future<void> deleteSection(int id) => _pushDelete('sections', id);
-  Future<void> deleteSubjectSection(int id) =>
-      _pushDelete('subject_sections', id);
-  Future<void> deleteProfessorSubject(int id) =>
-      _pushDelete('professor_subjects', id);
+  Future<void> deleteSubjectSection(int id) => _pushDelete('subject_sections', id);
+  Future<void> deleteProfessorSubject(int id) => _pushDelete('professor_subjects', id);
 
   // ═══════════════════════════════════════════
   // REAL-TIME LISTENER (attendance screen specific)
   // ═══════════════════════════════════════════
 
-  /// Listen to live attendance for a specific class session.
-  /// Use this in your attendance/scanner screen for filtered updates.
   RealtimeChannel listenToAttendance({
     required int subjectSectionId,
     required String date,
     required void Function(Map<String, dynamic> row) onInsert,
     required void Function(Map<String, dynamic> row) onUpdate,
-    void Function(int id)? onDelete, // NEW: optional delete callback
+    void Function(int id)? onDelete,
   }) {
     return _client
         .channel('attendance_${subjectSectionId}_$date')
@@ -544,13 +500,12 @@ class SyncService {
           },
         )
         .onPostgresChanges(
-          // NEW: live delete on attendance screen
           event: PostgresChangeEvent.delete,
           schema: 'public',
           table: 'attendance',
           callback: (payload) {
             final old = payload.oldRecord;
-            if (old.isEmpty) return; // REPLICA IDENTITY FULL not set
+            if (old.isEmpty) return;
             if (old['subject_section_id'] == subjectSectionId &&
                 old['date'] == date) {
               onDelete?.call(old['id'] as int);
@@ -564,8 +519,7 @@ class SyncService {
   // PULL: Supabase → Local (manual / on-demand)
   // ═══════════════════════════════════════════
 
-  Future<List<Map<String, dynamic>>> pullAttendance(
-      int subjectSectionId) async {
+  Future<List<Map<String, dynamic>>> pullAttendance(int subjectSectionId) async {
     try {
       final result = await _client
           .from('attendance')
@@ -620,7 +574,6 @@ class SyncService {
 
   /// Full pull — seeds local SQLite from Supabase manually.
   /// Prefer letting init() handle this automatically.
-  /// Use this only if you need a manual refresh button.
   Future<void> pullAll(
       Function(String table, List<Map<String, dynamic>> rows) onData) async {
     if (!_isOnline) {
@@ -629,8 +582,7 @@ class SyncService {
     }
 
     final session = _client.auth.currentSession;
-    print(
-        'pullAll: starting — session=${session == null ? 'anon' : 'authenticated'}');
+    print('pullAll: starting — session=${session == null ? 'anon' : 'authenticated'}');
 
     final tables = [
       'professors',
@@ -645,13 +597,11 @@ class SyncService {
     for (final table in tables) {
       try {
         final result = await _client.from(table).select();
-        final rows =
-            _sanitize(table, List<Map<String, dynamic>>.from(result));
+        final rows = _sanitize(table, List<Map<String, dynamic>>.from(result));
         print('pullAll: $table → ${rows.length} rows fetched');
         onData(table, rows);
       } catch (e) {
         print('pullAll: ERROR on $table → $e');
-        // Continue to next table — do NOT rethrow
       }
     }
 
