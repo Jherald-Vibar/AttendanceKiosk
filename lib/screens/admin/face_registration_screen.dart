@@ -35,7 +35,7 @@ class _FaceRegistrationScreenState extends State<FaceRegistrationScreen>
   bool _faceCaptured = false;
   bool _faceDetected = false;
   bool _isDetecting = false;
-  bool _showingPreview = false;       // ← NEW: grid preview stage
+  bool _showingPreview = false;
   List<double>? _capturedEmbedding;
 
   // ── 4-shot state ──────────────────────────────────────────────────
@@ -44,7 +44,7 @@ class _FaceRegistrationScreenState extends State<FaceRegistrationScreen>
   String _statusMessage = 'Align face inside the frame';
 
   // ── Shot preview paths ────────────────────────────────────────────
-  final List<String> _shotPaths = [];  // ← NEW: stores file paths for preview
+  final List<String> _shotPaths = [];
 
   late AnimationController _successCtrl;
 
@@ -71,7 +71,12 @@ class _FaceRegistrationScreenState extends State<FaceRegistrationScreen>
 
   @override
   void dispose() {
-    _cameraController?.stopImageStream();
+    // FIX: only stop the stream if it is actually running
+    if (_cameraController != null &&
+        _cameraController!.value.isInitialized &&
+        _cameraController!.value.isStreamingImages) {
+      _cameraController!.stopImageStream();
+    }
     _cameraController?.dispose();
     _successCtrl.dispose();
     super.dispose();
@@ -84,7 +89,8 @@ class _FaceRegistrationScreenState extends State<FaceRegistrationScreen>
       orElse: () => cameras.first,
     );
     _cameraController = CameraController(
-      front, ResolutionPreset.high,
+      front,
+      ResolutionPreset.high,
       enableAudio: false,
       imageFormatGroup: ImageFormatGroup.nv21,
     );
@@ -96,13 +102,18 @@ class _FaceRegistrationScreenState extends State<FaceRegistrationScreen>
   }
 
   void _startLiveDetection() {
-    _cameraController!.startImageStream((CameraImage image) async {
+    final controller = _cameraController;
+    if (controller == null || !controller.value.isInitialized) return;
+
+    // FIX: don't call startImageStream if already streaming
+    if (controller.value.isStreamingImages) return;
+
+    controller.startImageStream((CameraImage image) async {
       if (_isDetecting || _faceCaptured || _showingPreview) return;
       _isDetecting = true;
       try {
         final input = FaceRecognitionService.instance
-            .buildInputImageFromCamera(
-                image, _cameraController!.description);
+            .buildInputImageFromCamera(image, controller.description);
         if (input != null) {
           final faces =
               await FaceRecognitionService.instance.detectFaces(input);
@@ -124,7 +135,13 @@ class _FaceRegistrationScreenState extends State<FaceRegistrationScreen>
     });
 
     try {
-      await _cameraController!.stopImageStream();
+      // FIX: guard stopImageStream before calling it
+      final controller = _cameraController;
+      if (controller != null &&
+          controller.value.isInitialized &&
+          controller.value.isStreamingImages) {
+        await controller.stopImageStream();
+      }
       await Future.delayed(const Duration(milliseconds: 200));
 
       final List<List<double>> embeddings = [];
@@ -135,7 +152,7 @@ class _FaceRegistrationScreenState extends State<FaceRegistrationScreen>
         setState(() => _statusMessage = 'Taking shot $shot of $_totalShots...');
 
         final xFile = await _cameraController!.takePicture();
-        _shotPaths.add(xFile.path); // ← store path for preview
+        _shotPaths.add(xFile.path);
 
         final inputImage = InputImage.fromFile(File(xFile.path));
         final allFaces =
@@ -171,11 +188,10 @@ class _FaceRegistrationScreenState extends State<FaceRegistrationScreen>
 
       setState(() {
         _capturedEmbedding = averaged;
-        _showingPreview = true;       // ← go to preview stage first
+        _showingPreview = true;
         _isProcessing = false;
         _statusMessage = 'Review your shots';
       });
-
     } catch (e) {
       _showError('Error: ${e.toString()}');
       _resetCapture();
@@ -231,8 +247,6 @@ class _FaceRegistrationScreenState extends State<FaceRegistrationScreen>
     try {
       final embStr = FaceRecognitionService.encode(_capturedEmbedding!);
 
-      // DatabaseHelper.save*FaceEmbedding writes locally AND calls
-      // SyncService.pushFaceEmbedding, which is offline-queued automatically.
       switch (widget.type) {
         case FaceRegType.admin:
           await DatabaseHelper.instance
@@ -335,7 +349,8 @@ class _FaceRegistrationScreenState extends State<FaceRegistrationScreen>
                     scale: CurvedAnimation(
                         parent: _successCtrl, curve: Curves.elasticOut),
                     child: Container(
-                      width: 130, height: 130,
+                      width: 130,
+                      height: 130,
                       decoration: BoxDecoration(
                         color: _accent.withOpacity(0.15),
                         shape: BoxShape.circle,
@@ -380,7 +395,8 @@ class _FaceRegistrationScreenState extends State<FaceRegistrationScreen>
           GestureDetector(
             onTap: () => Navigator.pop(context),
             child: Container(
-              width: 40, height: 40,
+              width: 40,
+              height: 40,
               decoration: BoxDecoration(
                 color: Colors.black45,
                 borderRadius: BorderRadius.circular(10),
@@ -416,7 +432,8 @@ class _FaceRegistrationScreenState extends State<FaceRegistrationScreen>
           alignment: Alignment.center,
           children: [
             Container(
-              width: 220, height: 280,
+              width: 220,
+              height: 280,
               decoration: BoxDecoration(
                 borderRadius: BorderRadius.circular(120),
                 border: Border.all(
@@ -430,7 +447,8 @@ class _FaceRegistrationScreenState extends State<FaceRegistrationScreen>
               ),
             ),
             SizedBox(
-              width: 260, height: 320,
+              width: 260,
+              height: 320,
               child: CustomPaint(
                 painter: _FramePainter(
                   color: _faceCaptured
@@ -443,7 +461,8 @@ class _FaceRegistrationScreenState extends State<FaceRegistrationScreen>
             ),
             if (_isProcessing && _shotsTaken > 0)
               Container(
-                width: 220, height: 280,
+                width: 220,
+                height: 280,
                 decoration: BoxDecoration(
                   color: Colors.black.withOpacity(0.5),
                   borderRadius: BorderRadius.circular(120),
@@ -519,9 +538,9 @@ class _FaceRegistrationScreenState extends State<FaceRegistrationScreen>
         const SizedBox(height: 12),
 
         if (!_faceCaptured && !_isProcessing)
-          Row(
+          const Row(
             mainAxisAlignment: MainAxisAlignment.center,
-            children: const [
+            children: [
               _Tip(icon: Icons.wb_sunny_outlined, text: 'Good light'),
               SizedBox(width: 16),
               _Tip(icon: Icons.face_outlined, text: 'Face forward'),
@@ -551,8 +570,7 @@ class _FaceRegistrationScreenState extends State<FaceRegistrationScreen>
                   decoration: BoxDecoration(
                     color: _accent.withOpacity(0.1),
                     borderRadius: BorderRadius.circular(10),
-                    border:
-                        Border.all(color: _accent.withOpacity(0.3)),
+                    border: Border.all(color: _accent.withOpacity(0.3)),
                   ),
                   child: Row(
                     mainAxisSize: MainAxisSize.min,
@@ -570,13 +588,15 @@ class _FaceRegistrationScreenState extends State<FaceRegistrationScreen>
                   ),
                 ),
                 SizedBox(
-                  width: double.infinity, height: 54,
+                  width: double.infinity,
+                  height: 54,
                   child: ElevatedButton.icon(
                     onPressed: _isProcessing ? null : _saveFace,
                     icon: const Icon(Icons.cloud_upload_rounded, size: 20),
                     label: _isProcessing
                         ? const SizedBox(
-                            width: 20, height: 20,
+                            width: 20,
+                            height: 20,
                             child: CircularProgressIndicator(
                                 color: Colors.white, strokeWidth: 2))
                         : const Text('Save & Sync Face ID',
@@ -604,14 +624,15 @@ class _FaceRegistrationScreenState extends State<FaceRegistrationScreen>
               ],
             )
           : SizedBox(
-              width: double.infinity, height: 54,
+              width: double.infinity,
+              height: 54,
               child: ElevatedButton.icon(
-                onPressed: (_faceDetected && !_isProcessing)
-                    ? _captureFace
-                    : null,
+                onPressed:
+                    (_faceDetected && !_isProcessing) ? _captureFace : null,
                 icon: _isProcessing
                     ? const SizedBox(
-                        width: 20, height: 20,
+                        width: 20,
+                        height: 20,
                         child: CircularProgressIndicator(
                             color: Colors.white, strokeWidth: 2))
                     : const Icon(Icons.camera_alt_rounded, size: 22),
@@ -625,8 +646,7 @@ class _FaceRegistrationScreenState extends State<FaceRegistrationScreen>
                       fontSize: 16, fontWeight: FontWeight.w800),
                 ),
                 style: ElevatedButton.styleFrom(
-                  backgroundColor:
-                      _faceDetected ? _accent : Colors.white12,
+                  backgroundColor: _faceDetected ? _accent : Colors.white12,
                   foregroundColor: Colors.white,
                   disabledBackgroundColor: Colors.white12,
                   disabledForegroundColor: Colors.white38,
@@ -640,7 +660,7 @@ class _FaceRegistrationScreenState extends State<FaceRegistrationScreen>
   }
 
   // ══════════════════════════════════════════════════════════════════
-  // ── NEW: 4-shot preview screen ───────────────────────────────────
+  // ── 4-shot preview screen ────────────────────────────────────────
   // ══════════════════════════════════════════════════════════════════
   Widget _buildPreviewScreen() {
     return Container(
@@ -656,7 +676,8 @@ class _FaceRegistrationScreenState extends State<FaceRegistrationScreen>
                   GestureDetector(
                     onTap: _retakeFromPreview,
                     child: Container(
-                      width: 40, height: 40,
+                      width: 40,
+                      height: 40,
                       decoration: BoxDecoration(
                         color: Colors.white10,
                         borderRadius: BorderRadius.circular(10),
@@ -676,8 +697,7 @@ class _FaceRegistrationScreenState extends State<FaceRegistrationScreen>
                               fontSize: 15)),
                       Text('Check all shots look clear',
                           style: TextStyle(
-                              color: _accent.withOpacity(0.8),
-                              fontSize: 13)),
+                              color: _accent.withOpacity(0.8), fontSize: 13)),
                     ],
                   ),
                 ],
@@ -699,15 +719,13 @@ class _FaceRegistrationScreenState extends State<FaceRegistrationScreen>
                 ),
                 child: Row(
                   children: [
-                    Icon(Icons.info_outline_rounded,
-                        color: _accent, size: 18),
+                    Icon(Icons.info_outline_rounded, color: _accent, size: 18),
                     const SizedBox(width: 10),
                     const Expanded(
                       child: Text(
                         'Make sure your face is clearly visible in all 4 shots. '
                         'Blurry or obstructed shots may reduce accuracy.',
-                        style:
-                            TextStyle(color: Colors.white60, fontSize: 12),
+                        style: TextStyle(color: Colors.white60, fontSize: 12),
                       ),
                     ),
                   ],
@@ -781,12 +799,13 @@ class _FaceRegistrationScreenState extends State<FaceRegistrationScreen>
               padding: const EdgeInsets.fromLTRB(24, 0, 24, 32),
               child: Column(
                 children: [
-                  // Confirm → proceed to save
                   SizedBox(
-                    width: double.infinity, height: 54,
+                    width: double.infinity,
+                    height: 54,
                     child: ElevatedButton.icon(
                       onPressed: _confirmPreview,
-                      icon: const Icon(Icons.check_circle_rounded, size: 20),
+                      icon:
+                          const Icon(Icons.check_circle_rounded, size: 20),
                       label: const Text('Looks Good — Use These',
                           style: TextStyle(
                               fontSize: 16, fontWeight: FontWeight.w800)),
@@ -800,9 +819,9 @@ class _FaceRegistrationScreenState extends State<FaceRegistrationScreen>
                     ),
                   ),
                   const SizedBox(height: 12),
-                  // Retake
                   SizedBox(
-                    width: double.infinity, height: 48,
+                    width: double.infinity,
+                    height: 48,
                     child: OutlinedButton.icon(
                       onPressed: _retakeFromPreview,
                       icon: const Icon(Icons.refresh_rounded,
@@ -847,12 +866,12 @@ class _ShotTile extends StatelessWidget {
       child: Stack(
         fit: StackFit.expand,
         children: [
-          // Photo
           Image.file(File(path), fit: BoxFit.cover),
 
-          // Gradient overlay at bottom
           Positioned(
-            bottom: 0, left: 0, right: 0,
+            bottom: 0,
+            left: 0,
+            right: 0,
             child: Container(
               height: 48,
               decoration: BoxDecoration(
@@ -868,9 +887,9 @@ class _ShotTile extends StatelessWidget {
             ),
           ),
 
-          // Shot label badge
           Positioned(
-            bottom: 8, left: 8,
+            bottom: 8,
+            left: 8,
             child: Container(
               padding:
                   const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
@@ -889,9 +908,9 @@ class _ShotTile extends StatelessWidget {
             ),
           ),
 
-          // Corner frame decoration
           Positioned(
-            top: 6, right: 6,
+            top: 6,
+            right: 6,
             child: Container(
               padding: const EdgeInsets.all(4),
               decoration: BoxDecoration(
@@ -941,7 +960,8 @@ class _FramePainter extends CustomPainter {
     canvas.drawLine(const Offset(0, 0), const Offset(c, 0), paint);
     canvas.drawLine(Offset(size.width - c, 0), Offset(size.width, 0), paint);
     canvas.drawLine(Offset(size.width, 0), Offset(size.width, c), paint);
-    canvas.drawLine(Offset(0, size.height - c), Offset(0, size.height), paint);
+    canvas.drawLine(
+        Offset(0, size.height - c), Offset(0, size.height), paint);
     canvas.drawLine(Offset(0, size.height), Offset(c, size.height), paint);
     canvas.drawLine(Offset(size.width - c, size.height),
         Offset(size.width, size.height), paint);

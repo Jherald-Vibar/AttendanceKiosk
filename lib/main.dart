@@ -25,8 +25,8 @@ void main() async {
   WidgetsFlutterBinding.ensureInitialized();
 
   await Supabase.initialize(
-    url: 'https://anzabsyngsmxgvnnbonn.supabase.co',
-    anonKey: 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImFuemFic3luZ3NteGd2bm5ib25uIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzYwNDI5MjUsImV4cCI6MjA5MTYxODkyNX0.ngE64HEMTcndgOuRBkmjr0KEnQtF_gxxfvAJj2NL1lU',
+    url: 'https://lpysrudcplmtaafzhsyq.supabase.co',
+    anonKey: 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImxweXNydWRjcGxtdGFhZnpoc3lxIiwicm9sZSI6ImFub24iLCJpYXQiOjE3Nzg2NTc5MzUsImV4cCI6MjA5NDIzMzkzNX0.ehFsXVTGfQTFN8ALG0QvkGEA5fgug5PjyAlVs5pNbhY',
   );
 
   await SyncService.instance.init();

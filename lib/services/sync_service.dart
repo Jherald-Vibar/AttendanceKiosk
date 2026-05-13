@@ -74,9 +74,6 @@ class SyncService {
         final result = await _client.from(table).select();
         var rows = List<Map<String, dynamic>>.from(result);
 
-        // _sanitize strips face_embedding for general pushes (keeps passwords
-        // safe). For seeding we want the full row including face_embedding,
-        // so we use _sanitizeForSeed instead.
         rows = _sanitizeForSeed(table, rows);
 
         print('🌱 Seeding $table → ${rows.length} rows');
@@ -122,8 +119,6 @@ class SyncService {
             event: PostgresChangeEvent.insert,
             schema: 'public',
             table: table,
-            // Use _sanitizeForSeed so live-inserted rows also carry
-            // face_embedding when Realtime delivers them.
             callback: (payload) =>
                 _handleLiveRow(table, payload.newRecord, forSeed: true),
           )
@@ -256,18 +251,19 @@ class SyncService {
   // OFFLINE QUEUE
   // ═══════════════════════════════════════════
 
-  Future<int> _enqueue(String table, Map<String, dynamic> payload) async {
+  Future<int> _enqueue(String table, Map<String, dynamic> payload,
+      {String operation = 'upsert'}) async {
     try {
       final db = await DatabaseHelper.instance.database;
       final id = await db.insert('sync_queue', {
         'table_name': table,
-        'operation': 'upsert',
+        'operation': operation,
         'payload': jsonEncode(payload),
       });
-      print('📥 Queued offline upsert: $table (queue id=$id)');
+      print('📥 Queued offline $operation: $table (queue id=$id)');
       return id;
     } catch (e) {
-      print('❌ CRITICAL: Failed to enqueue upsert for $table: $e');
+      print('❌ CRITICAL: Failed to enqueue $operation for $table: $e');
       print(
           '   ↳ Make sure sync_queue table exists in your DatabaseHelper migration.');
       return -1;
@@ -292,7 +288,7 @@ class SyncService {
     }
   }
 
-  /// Flushes all queued upserts AND deletes to Supabase. Called when back online.
+  /// Flushes all queued operations to Supabase. Called when back online.
   Future<void> flushQueue() async {
     if (!_isOnline) return;
     final db = await DatabaseHelper.instance.database;
@@ -336,8 +332,23 @@ class SyncService {
                   '— row may already be gone or RLS is blocking.');
             }
           }
+        } else if (operation == 'face_update') {
+          // FIX: face embeddings must use UPDATE, not upsert, to avoid
+          // triggering an INSERT that violates NOT NULL constraints on
+          // other required columns (e.g. employee_id).
+          final id = payload['id'];
+          final embedding = payload['face_embedding'];
+          final updatedAt = payload['updated_at'];
+          if (id != null && embedding != null) {
+            await _client.from(table).update({
+              'face_embedding': embedding,
+              'updated_at': updatedAt,
+            }).eq('id', id);
+            print(
+                '✅ Flushed queued face_update → $table #$id (queue id=${item['id']})');
+          }
         } else {
-          // Both 'upsert' and 'face_embedding' operations use upsert.
+          // Generic upsert for all other operations.
           await _client.from(table).upsert(payload);
           print(
               '✅ Flushed queued UPSERT → $table (queue id=${item['id']})');
@@ -347,7 +358,7 @@ class SyncService {
             where: 'id = ?', whereArgs: [item['id']]);
       } catch (e) {
         print('❌ Failed to flush queued record (id=${item['id']}): $e');
-        // Leave it in the queue to retry next time
+        // Leave it in the queue to retry next time.
       }
     }
 
@@ -368,11 +379,8 @@ class SyncService {
   /// Offline-safe: enqueues the update when the device has no connection
   /// and flushes it automatically on the next online reconnect.
   ///
-  /// Supabase schema requirement — the target table must have a
-  /// `face_embedding TEXT` column, e.g.:
-  ///
-  ///   ALTER TABLE professors ADD COLUMN IF NOT EXISTS face_embedding TEXT;
-  ///   ALTER TABLE students   ADD COLUMN IF NOT EXISTS face_embedding TEXT;
+  /// Uses UPDATE (not upsert) to avoid triggering an INSERT that would
+  /// violate NOT NULL constraints on columns like employee_id.
   Future<void> pushFaceEmbedding({
     required String table,
     required int id,
@@ -384,25 +392,39 @@ class SyncService {
       'Admin embeddings are device-local.',
     );
 
-    final payload = {
-      'id': id,
-      'face_embedding': embedding,
-      'updated_at': DateTime.now().toUtc().toIso8601String(),
-    };
+    final updatedAt = DateTime.now().toUtc().toIso8601String();
 
+    // FIX: queue as 'face_update' so flushQueue routes it to .update(),
+    // not .upsert(), which would attempt an INSERT and fail on NOT NULL cols.
     if (!_isOnline) {
-      print('📥 Offline — queuing face_embedding upsert for $table #$id');
-      await _enqueue(table, payload);
+      print('📥 Offline — queuing face_embedding update for $table #$id');
+      await _enqueue(
+        table,
+        {'id': id, 'face_embedding': embedding, 'updated_at': updatedAt},
+        operation: 'face_update',
+      );
       return;
     }
 
     try {
-      await _client.from(table).upsert(payload, onConflict: 'id');
+      // FIX: use .update().eq() instead of .upsert() to prevent Supabase
+      // from attempting an INSERT when the conflict resolution falls through.
+      await _client
+          .from(table)
+          .update({
+            'face_embedding': embedding,
+            'updated_at': updatedAt,
+          })
+          .eq('id', id);
       print('✅ Face embedding synced → $table #$id');
     } catch (e) {
       print(
           '❌ Face embedding sync error for $table #$id: $e — queuing for retry');
-      await _enqueue(table, payload);
+      await _enqueue(
+        table,
+        {'id': id, 'face_embedding': embedding, 'updated_at': updatedAt},
+        operation: 'face_update',
+      );
     }
   }
 
@@ -660,7 +682,6 @@ class SyncService {
   Future<List<Map<String, dynamic>>> pullStudents() async {
     try {
       final result = await _client.from('students').select();
-      // Use _sanitizeForSeed so face_embedding comes down with pull too
       return _sanitizeForSeed(
           'students', List<Map<String, dynamic>>.from(result));
     } catch (e) {
@@ -672,7 +693,6 @@ class SyncService {
   Future<List<Map<String, dynamic>>> pullProfessors() async {
     try {
       final result = await _client.from('professors').select();
-      // Use _sanitizeForSeed so face_embedding comes down with pull too
       return _sanitizeForSeed(
           'professors', List<Map<String, dynamic>>.from(result));
     } catch (e) {
@@ -728,7 +748,6 @@ class SyncService {
     for (final table in tables) {
       try {
         final result = await _client.from(table).select();
-        // Use _sanitizeForSeed so face_embedding is preserved on full pull
         final rows = _sanitizeForSeed(
             table, List<Map<String, dynamic>>.from(result));
         print('pullAll: $table → ${rows.length} rows fetched');

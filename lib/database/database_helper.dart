@@ -26,7 +26,7 @@ class DatabaseHelper {
     final path = join(await getDatabasesPath(), 'sentry.db');
     return openDatabase(
       path,
-      version: 3,
+      version: 4,
       onCreate: _onCreate,
       onUpgrade: _onUpgrade,
     );
@@ -54,6 +54,7 @@ class DatabaseHelper {
         username TEXT NOT NULL UNIQUE,
         password TEXT NOT NULL,
         face_embedding TEXT,
+        updated_at TEXT,
         created_at TEXT DEFAULT (datetime('now'))
       )
     ''');
@@ -215,6 +216,13 @@ class DatabaseHelper {
           created_at TEXT DEFAULT (datetime('now'))
         )
       ''');
+    }
+
+    if (oldVersion < 4) {
+      // Add updated_at column to professors to match Supabase schema
+      await db.execute(
+        'ALTER TABLE professors ADD COLUMN updated_at TEXT',
+      );
     }
   }
 
