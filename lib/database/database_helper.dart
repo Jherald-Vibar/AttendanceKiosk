@@ -340,11 +340,10 @@ class DatabaseHelper {
     return count;
   }
 
-  /// Deletes professor locally AND from Supabase.
-  /// Supabase Realtime will propagate the delete to all other devices.
   Future<int> deleteProfessor(int id) async {
     final db = await database;
-    final count = await db.delete('professors', where: 'id = ?', whereArgs: [id]);
+    final count =
+        await db.delete('professors', where: 'id = ?', whereArgs: [id]);
 
     // ── SYNC ────────────────────────────────────────────────────────
     await SyncService.instance.deleteProfessor(id);
@@ -353,10 +352,28 @@ class DatabaseHelper {
     return count;
   }
 
+  /// Saves professor face embedding locally and syncs the
+  /// face_embedding column to Supabase via the offline-safe queue.
   Future<int> saveProfessorFaceEmbedding(int id, String embedding) async {
     final db = await database;
-    return db.update('professors', {'face_embedding': embedding},
-        where: 'id = ?', whereArgs: [id]);
+    final count = await db.update(
+      'professors',
+      {'face_embedding': embedding},
+      where: 'id = ?',
+      whereArgs: [id],
+    );
+
+    // ── SYNC: push only the embedding field ─────────────────────────
+    // SyncService.pushProfessor sanitizes away face_embedding by default,
+    // so we use pushFaceEmbedding which bypasses that strip.
+    await SyncService.instance.pushFaceEmbedding(
+      table: 'professors',
+      id: id,
+      embedding: embedding,
+    );
+    // ────────────────────────────────────────────────────────────────
+
+    return count;
   }
 
   // ═══════════════════════════════════════════════════════════════════
@@ -393,11 +410,10 @@ class DatabaseHelper {
     return count;
   }
 
-  /// Deletes subject locally AND from Supabase.
-  /// Supabase Realtime will propagate the delete to all other devices.
   Future<int> deleteSubject(int id) async {
     final db = await database;
-    final count = await db.delete('subjects', where: 'id = ?', whereArgs: [id]);
+    final count =
+        await db.delete('subjects', where: 'id = ?', whereArgs: [id]);
 
     // ── SYNC ────────────────────────────────────────────────────────
     await SyncService.instance.deleteSubject(id);
@@ -440,11 +456,10 @@ class DatabaseHelper {
     return count;
   }
 
-  /// Deletes section locally AND from Supabase.
-  /// Supabase Realtime will propagate the delete to all other devices.
   Future<int> deleteSection(int id) async {
     final db = await database;
-    final count = await db.delete('sections', where: 'id = ?', whereArgs: [id]);
+    final count =
+        await db.delete('sections', where: 'id = ?', whereArgs: [id]);
 
     // ── SYNC ────────────────────────────────────────────────────────
     await SyncService.instance.deleteSection(id);
@@ -478,11 +493,8 @@ class DatabaseHelper {
     return id;
   }
 
-  /// Removes professor-subject assignment locally AND from Supabase.
   Future<int> removeSubjectFromProfessor(int professorId, int subjectId) async {
     final db = await database;
-
-    // Get the row id first so we can delete it by id in Supabase
     final rows = await db.query(
       'professor_subjects',
       where: 'professor_id = ? AND subject_id = ?',
@@ -577,11 +589,8 @@ class DatabaseHelper {
     return id;
   }
 
-  /// Removes subject-section assignment locally AND from Supabase.
   Future<int> removeSectionFromSubject(int subjectId, int sectionId) async {
     final db = await database;
-
-    // Get the row id first so we can delete it by id in Supabase
     final rows = await db.query(
       'subject_sections',
       where: 'subject_id = ? AND section_id = ?',
@@ -707,11 +716,10 @@ class DatabaseHelper {
     return count;
   }
 
-  /// Deletes student locally AND from Supabase.
-  /// Supabase Realtime will propagate the delete to all other devices.
   Future<int> deleteStudent(int id) async {
     final db = await database;
-    final count = await db.delete('students', where: 'id = ?', whereArgs: [id]);
+    final count =
+        await db.delete('students', where: 'id = ?', whereArgs: [id]);
 
     // ── SYNC ────────────────────────────────────────────────────────
     await SyncService.instance.deleteStudent(id);
@@ -720,10 +728,26 @@ class DatabaseHelper {
     return count;
   }
 
+  /// Saves student face embedding locally and syncs the
+  /// face_embedding column to Supabase via the offline-safe queue.
   Future<int> saveStudentFaceEmbedding(int id, String embedding) async {
     final db = await database;
-    return db.update('students', {'face_embedding': embedding},
-        where: 'id = ?', whereArgs: [id]);
+    final count = await db.update(
+      'students',
+      {'face_embedding': embedding},
+      where: 'id = ?',
+      whereArgs: [id],
+    );
+
+    // ── SYNC: push only the embedding field ─────────────────────────
+    await SyncService.instance.pushFaceEmbedding(
+      table: 'students',
+      id: id,
+      embedding: embedding,
+    );
+    // ────────────────────────────────────────────────────────────────
+
+    return count;
   }
 
   // ═══════════════════════════════════════════════════════════════════
@@ -760,10 +784,17 @@ class DatabaseHelper {
     return db.query('students', where: 'face_embedding IS NOT NULL');
   }
 
+  /// Saves admin face embedding locally.
+  /// Note: admins table is device-local only (not synced to Supabase),
+  /// so no sync call is needed here.
   Future<int> saveAdminFaceEmbedding(int id, String embedding) async {
     final db = await database;
-    return db.update('admins', {'face_embedding': embedding},
-        where: 'id = ?', whereArgs: [id]);
+    return db.update(
+      'admins',
+      {'face_embedding': embedding},
+      where: 'id = ?',
+      whereArgs: [id],
+    );
   }
 
   // ═══════════════════════════════════════════════════════════════════
@@ -843,8 +874,6 @@ class DatabaseHelper {
     return count > 0;
   }
 
-  /// Deletes an attendance record locally AND from Supabase.
-  /// Supabase Realtime will propagate the delete to all other devices.
   Future<int> deleteAttendance(int id) async {
     final db = await database;
     final count =
